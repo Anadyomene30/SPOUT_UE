@@ -50,7 +50,7 @@ FSpoutReceiveResult FSpoutReceiverStream::ReceiveInternal_RenderThread(FRHIComma
 {
 	FSpoutReceiveResult Result;
 
-	FSpoutD3D12Device* Device = FSpoutUEModule::Get().GetDevice();
+	FSpoutD3D12Device* Device = GetSpoutDevice();
 	if (!Device)
 	{
 		return Result;
@@ -231,7 +231,7 @@ bool FSpoutReceiverStream::EnsureReceiveTexture_RenderThread(FRHICommandListImme
 
 bool FSpoutReceiverStream::EnsureWrappedResource_RenderThread()
 {
-	FSpoutD3D12Device* Device = FSpoutUEModule::Get().GetDevice();
+	FSpoutD3D12Device* Device = GetSpoutDevice();
 	if (!Device || !ReceiveTexture.IsValid())
 	{
 		return false;

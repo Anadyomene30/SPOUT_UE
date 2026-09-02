@@ -33,10 +33,23 @@ void FSpoutUEModule::StartupModule()
 	// a D3D11 runtime it will not use.
 }
 
+namespace
+{
+	/**
+	 * The bridge outlives no more than the module, but it is reached from the
+	 * render thread, so it lives here behind a lock rather than on the module
+	 * object that only the game thread should be asking FModuleManager for.
+	 */
+	TUniquePtr<FSpoutD3D12Device> GSpoutDevice;
+	FCriticalSection GSpoutDeviceSection;
+	bool GSpoutDeviceCreationFailed = false;
+}
+
 void FSpoutUEModule::ShutdownModule()
 {
-	FScopeLock Lock(&DeviceCS);
-	Device.Reset();
+	FScopeLock Lock(&GSpoutDeviceSection);
+	GSpoutDevice.Reset();
+	GSpoutDeviceCreationFailed = false;
 }
 
 bool FSpoutUEModule::IsRHISupported()
@@ -48,25 +61,24 @@ bool FSpoutUEModule::IsRHISupported()
 #endif
 }
 
-FSpoutD3D12Device* FSpoutUEModule::GetDevice()
+FSpoutD3D12Device* GetSpoutDevice()
 {
 #if PLATFORM_WINDOWS
-	FScopeLock Lock(&DeviceCS);
+	FScopeLock Lock(&GSpoutDeviceSection);
 
-	if (!Device.IsValid())
+	if (!GSpoutDevice.IsValid() && !GSpoutDeviceCreationFailed)
 	{
-		static bool bWarnedOnce = false;
+		GSpoutDevice = FSpoutD3D12Device::Create();
 
-		Device = FSpoutD3D12Device::Create();
-
-		if (!Device.IsValid() && !bWarnedOnce)
+		if (!GSpoutDevice.IsValid())
 		{
-			bWarnedOnce = true;
+			// Retrying every frame would flood the log with the same failure.
+			GSpoutDeviceCreationFailed = true;
 			UE_LOG(LogSpout, Error, TEXT("Spout sharing is unavailable: the D3D11On12 bridge could not be created."));
 		}
 	}
 
-	return Device.Get();
+	return GSpoutDevice.Get();
 #else
 	return nullptr;
 #endif

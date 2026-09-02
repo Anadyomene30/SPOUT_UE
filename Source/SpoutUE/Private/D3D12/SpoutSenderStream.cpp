@@ -45,7 +45,7 @@ bool FSpoutSenderStream::Send_RenderThread(FRHICommandListImmediate& RHICmdList,
 		return false;
 	}
 
-	FSpoutD3D12Device* Device = FSpoutUEModule::Get().GetDevice();
+	FSpoutD3D12Device* Device = GetSpoutDevice();
 	if (!Device)
 	{
 		return false;
@@ -171,7 +171,7 @@ bool FSpoutSenderStream::EnsureSharedTexture_RenderThread(FRHICommandListImmedia
 
 bool FSpoutSenderStream::EnsureWrappedResource_RenderThread()
 {
-	FSpoutD3D12Device* Device = FSpoutUEModule::Get().GetDevice();
+	FSpoutD3D12Device* Device = GetSpoutDevice();
 	if (!Device || !SharedTexture.IsValid())
 	{
 		return false;

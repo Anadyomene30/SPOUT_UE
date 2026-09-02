@@ -12,8 +12,8 @@ class FSpoutD3D12Device;
 /**
  * Runtime module for the Spout plugin.
  *
- * Owns the process-wide D3D11On12 bridge that every sender and receiver shares,
- * and registers the plugin's shader source directory.
+ * Registers the plugin's shader source directory and owns the lifetime of the
+ * shared D3D11On12 bridge, which is reached through GetSpoutDevice below.
  */
 class SPOUTUE_API FSpoutUEModule : public IModuleInterface
 {
@@ -32,19 +32,17 @@ public:
 		return FModuleManager::Get().IsModuleLoaded(TEXT("SpoutUE"));
 	}
 
-	/**
-	 * The shared D3D11On12 bridge, created lazily on first use from Unreal's own
-	 * D3D12 device and graphics queue.
-	 *
-	 * Returns nullptr when the running RHI is not D3D12, which is the plugin's
-	 * only supported configuration.
-	 */
-	FSpoutD3D12Device* GetDevice();
-
 	/** True when the running RHI can host Spout sharing (Windows + D3D12). */
 	static bool IsRHISupported();
-
-private:
-	TUniquePtr<FSpoutD3D12Device> Device;
-	FCriticalSection DeviceCS;
 };
+
+/**
+ * The shared D3D11On12 bridge, created lazily on first use from Unreal's own
+ * D3D12 device and graphics queue.
+ *
+ * A free function rather than a module method on purpose: the streams reach for
+ * it on the render thread, and FModuleManager is not something to touch from
+ * there. Returns nullptr when the running RHI is not D3D12, which is the
+ * plugin's only supported configuration.
+ */
+SPOUTUE_API FSpoutD3D12Device* GetSpoutDevice();
