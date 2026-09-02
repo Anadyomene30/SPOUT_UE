@@ -8,14 +8,10 @@
 #include "Framework/Application/SlateApplication.h"
 #include "RHICommandList.h"
 #include "RenderingThread.h"
-#include "Widgets/SWindow.h"
 #include "SpoutSettings.h"
 #include "SpoutUE.h"
 #include "TextureResource.h"
-
-#if PLATFORM_WINDOWS
-#include "D3D12/SpoutSenderStream.h"
-#endif
+#include "Widgets/SWindow.h"
 
 USpoutSenderComponent::USpoutSenderComponent()
 {
@@ -75,7 +71,7 @@ bool USpoutSenderComponent::ShouldAutoStart() const
 	case ESpoutStartupPolicy::GameOnly:
 	{
 		const UWorld* World = GetWorld();
-		return World && (World->IsGameWorld());
+		return World && World->IsGameWorld();
 	}
 
 	case ESpoutStartupPolicy::Manual:
@@ -91,31 +87,22 @@ void USpoutSenderComponent::StartSending()
 		return;
 	}
 
-	if (!FSpoutUEModule::IsRHISupported())
-	{
-		UE_LOG(LogSpout, Error, TEXT("Sender '%s' cannot start: Spout needs the D3D12 RHI on Windows."), *SenderName);
-		return;
-	}
-
 	if (SenderName.IsEmpty())
 	{
 		UE_LOG(LogSpout, Error, TEXT("A Spout sender needs a name before it can start."));
 		return;
 	}
 
+	Sender = FSpoutSenderHandle::Create();
+	if (!Sender.IsValid())
+	{
+		UE_LOG(LogSpout, Error, TEXT("Sender '%s' cannot start: Spout needs the D3D12 RHI on Windows."), *SenderName);
+		return;
+	}
+
 	bIsSending = true;
 	LastSendTimeSeconds = 0.0;
 	LastPublishedName.Reset();
-
-#if PLATFORM_WINDOWS
-	// Created here rather than lazily: in viewport mode the send runs from a
-	// present callback, and a pointer written by one thread and read by the other
-	// is a race worth not having.
-	if (!Stream)
-	{
-		Stream = new FSpoutSenderStream();
-	}
-#endif
 
 	if (SourceMode == ESpoutSourceMode::Viewport)
 	{
@@ -125,50 +112,47 @@ void USpoutSenderComponent::StartSending()
 
 void USpoutSenderComponent::StopSending()
 {
-	if (!bIsSending && !Stream)
+	if (!bIsSending && !Sender.IsValid())
 	{
 		return;
 	}
 
 	const FString StoppedName = LastPublishedName.IsEmpty() ? SenderName : LastPublishedName;
+	const bool bWasPublished = !LastPublishedName.IsEmpty();
 
 	bIsSending = false;
 	UnbindViewportSource();
 	DestroyStream();
+	LastPublishedName.Reset();
 
-	if (!LastPublishedName.IsEmpty())
+	if (bWasPublished)
 	{
-		LastPublishedName.Reset();
 		OnSenderStopped.Broadcast(StoppedName);
 	}
 }
 
 void USpoutSenderComponent::DestroyStream()
 {
-#if PLATFORM_WINDOWS
-	if (!Stream)
+	if (Sender.IsValid())
 	{
-		return;
+		Sender->Destroy();
+		Sender.Reset();
 	}
 
-	// The stream owns D3D resources that may only be touched on the render
-	// thread, so ownership is handed over rather than deleted here.
-	FSpoutSenderStream* Released = Stream;
-	Stream = nullptr;
+#if PLATFORM_WINDOWS
+	if (ViewportStaging.IsValid())
+	{
+		ENQUEUE_RENDER_COMMAND(SpoutReleaseViewportStaging)(
+			[this](FRHICommandListImmediate& RHICmdList)
+			{
+				ViewportStaging.SafeRelease();
+			});
 
-	ENQUEUE_RENDER_COMMAND(SpoutReleaseSender)(
-		[this, Released](FRHICommandListImmediate& RHICmdList)
-		{
-			Released->Release_RenderThread();
-			delete Released;
-
-			ViewportStaging.SafeRelease();
-		});
-
-	// The staging texture is only touched on the render thread, and the command
-	// above is the last thing that will touch it, so waiting here keeps the
-	// component from being destroyed out from under it.
-	FlushRenderingCommands();
+		// The staging texture is only ever touched on the render thread, and this
+		// is the last command that will touch it, so the component waits rather
+		// than risk being destroyed out from under it.
+		FlushRenderingCommands();
+	}
 #endif
 }
 
@@ -197,7 +181,7 @@ void USpoutSenderComponent::BindViewportSource()
 	GameViewportWindow = GEngine->GameViewport->GetWindow();
 	if (!GameViewportWindow.IsValid())
 	{
-		UE_LOG(LogSpout, Warning, TEXT("Sender '%s': the game viewport has no window yet; the viewport source will stay idle."), *SenderName);
+		UE_LOG(LogSpout, Warning, TEXT("Sender '%s': the game viewport has no window yet, so the viewport source will stay idle."), *SenderName);
 		return;
 	}
 
@@ -223,7 +207,7 @@ void USpoutSenderComponent::UnbindViewportSource()
 	GameViewportWindow.Reset();
 
 	// The delegate fires on the render thread, so an in-flight call has to finish
-	// before this component can be considered detached from it.
+	// before this component can consider itself detached from it.
 	FlushRenderingCommands();
 #endif
 }
@@ -233,7 +217,7 @@ void USpoutSenderComponent::OnBackBufferReady_RenderThread(SWindow& Window, cons
 #if PLATFORM_WINDOWS
 	check(IsInRenderingThread());
 
-	if (!bIsSending || !BackBuffer.IsValid())
+	if (!bIsSending || !BackBuffer.IsValid() || !Sender.IsValid())
 	{
 		return;
 	}
@@ -246,22 +230,17 @@ void USpoutSenderComponent::OnBackBufferReady_RenderThread(SWindow& Window, cons
 		return;
 	}
 
-	FSpoutSendParams Params;
+	FSpoutSenderSettings Settings;
 	{
 		FScopeLock Lock(&ViewportSettingsSection);
-		Params.SenderName = ViewportSenderName;
-		Params.PixelFormat = ViewportPixelFormat;
-		Params.Conversion.ColorSpace = ViewportColorSpace;
-		Params.Conversion.AlphaMode = ViewportAlphaMode;
-		Params.Conversion.bFlipVertical = bViewportFlipVertical;
+		Settings.SenderName = ViewportSenderName;
+		Settings.PixelFormat = ViewportPixelFormat;
+		Settings.ColorSpace = ViewportColorSpace;
+		Settings.AlphaMode = ViewportAlphaMode;
+		Settings.bFlipVertical = bViewportFlipVertical;
 	}
 
-	if (Params.SenderName.IsEmpty())
-	{
-		return;
-	}
-
-	if (!Stream)
+	if (Settings.SenderName.IsEmpty())
 	{
 		return;
 	}
@@ -270,8 +249,8 @@ void USpoutSenderComponent::OnBackBufferReady_RenderThread(SWindow& Window, cons
 
 	const FIntPoint BackBufferExtent(BackBuffer->GetSizeX(), BackBuffer->GetSizeY());
 
-	// The swap chain buffer is not something to sample from or to hand to another
-	// device, so the frame is copied into a texture of our own first.
+	// The swap chain buffer is not something to sample from or hand to another
+	// device, so the presented frame is copied into a texture of our own first.
 	if (!ViewportStaging.IsValid()
 		|| ViewportStaging->GetSizeX() != BackBufferExtent.X
 		|| ViewportStaging->GetSizeY() != BackBufferExtent.Y
@@ -300,7 +279,7 @@ void USpoutSenderComponent::OnBackBufferReady_RenderThread(SWindow& Window, cons
 	// Hand the swap chain buffer back in the state the presenter expects.
 	RHICmdList.Transition(FRHITransitionInfo(BackBuffer, ERHIAccess::CopySrc, ERHIAccess::Present));
 
-	Stream->Send_RenderThread(RHICmdList, ViewportStaging.GetReference(), Params);
+	Sender->Send_RenderThread(RHICmdList, ViewportStaging.GetReference(), Settings);
 #endif
 }
 
@@ -308,7 +287,7 @@ void USpoutSenderComponent::TickComponent(float DeltaTime, ELevelTick TickType, 
 {
 	Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
 
-	if (!bIsSending)
+	if (!bIsSending || !Sender.IsValid())
 	{
 		return;
 	}
@@ -316,8 +295,7 @@ void USpoutSenderComponent::TickComponent(float DeltaTime, ELevelTick TickType, 
 	if (SourceMode == ESpoutSourceMode::Viewport)
 	{
 		// The viewport path is driven by the present callback, so all this tick
-		// does is keep the render thread's copy of the settings current and
-		// surface the published name once Spout has created the sender.
+		// does is keep the render thread's copy of the settings current.
 		{
 			FScopeLock Lock(&ViewportSettingsSection);
 			ViewportSenderName = SenderName;
@@ -327,17 +305,7 @@ void USpoutSenderComponent::TickComponent(float DeltaTime, ELevelTick TickType, 
 			bViewportFlipVertical = bFlipVertical;
 		}
 
-		if (Stream)
-		{
-			const FString Published = Stream->GetPublishedName();
-			if (!Published.IsEmpty() && Published != LastPublishedName)
-			{
-				LastPublishedName = Published;
-				OnSenderStarted.Broadcast(Published);
-				UE_LOG(LogSpout, Log, TEXT("Spout sender '%s' is live (viewport)."), *Published);
-			}
-		}
-
+		NotifyPublishedName();
 		return;
 	}
 
@@ -359,8 +327,7 @@ void USpoutSenderComponent::TickComponent(float DeltaTime, ELevelTick TickType, 
 
 void USpoutSenderComponent::SendFrame()
 {
-#if PLATFORM_WINDOWS
-	if (!SourceRenderTarget)
+	if (!SourceRenderTarget || !Sender.IsValid())
 	{
 		return;
 	}
@@ -371,22 +338,17 @@ void USpoutSenderComponent::SendFrame()
 		return;
 	}
 
-	if (!Stream)
-	{
-		return;
-	}
+	FSpoutSenderSettings Settings;
+	Settings.SenderName = SenderName;
+	Settings.PixelFormat = PixelFormat;
+	Settings.ColorSpace = ColorSpace;
+	Settings.AlphaMode = AlphaMode;
+	Settings.bFlipVertical = bFlipVertical;
 
-	FSpoutSendParams Params;
-	Params.SenderName = SenderName;
-	Params.PixelFormat = PixelFormat;
-	Params.Conversion.ColorSpace = ColorSpace;
-	Params.Conversion.AlphaMode = AlphaMode;
-	Params.Conversion.bFlipVertical = bFlipVertical;
-
-	FSpoutSenderStream* StreamPtr = Stream;
+	TSharedPtr<FSpoutSenderHandle> SenderPtr = Sender;
 
 	ENQUEUE_RENDER_COMMAND(SpoutSendFrame)(
-		[StreamPtr, Resource, Params](FRHICommandListImmediate& RHICmdList)
+		[SenderPtr, Resource, Settings](FRHICommandListImmediate& RHICmdList)
 		{
 			FRHITexture* SourceTexture = Resource->GetRenderTargetTexture();
 			if (!SourceTexture)
@@ -394,28 +356,29 @@ void USpoutSenderComponent::SendFrame()
 				SourceTexture = Resource->TextureRHI;
 			}
 
-			StreamPtr->Send_RenderThread(RHICmdList, SourceTexture, Params);
+			SenderPtr->Send_RenderThread(RHICmdList, SourceTexture, Settings);
 		});
 
+	NotifyPublishedName();
+}
+
+void USpoutSenderComponent::NotifyPublishedName()
+{
 	// The published name only becomes known once the render thread has created
 	// the sender, so it is picked up on a later tick rather than synchronously.
-	const FString Published = Stream->GetPublishedName();
+	const FString Published = Sender.IsValid() ? Sender->GetPublishedName() : FString();
+
 	if (!Published.IsEmpty() && Published != LastPublishedName)
 	{
 		LastPublishedName = Published;
 		OnSenderStarted.Broadcast(Published);
 		UE_LOG(LogSpout, Log, TEXT("Spout sender '%s' is live."), *Published);
 	}
-#endif
 }
 
 bool USpoutSenderComponent::IsSending() const
 {
-#if PLATFORM_WINDOWS
-	return bIsSending && Stream && Stream->IsSending();
-#else
-	return false;
-#endif
+	return bIsSending && Sender.IsValid() && Sender->IsSending();
 }
 
 void USpoutSenderComponent::SetSenderName(const FString& NewName)
@@ -425,18 +388,19 @@ void USpoutSenderComponent::SetSenderName(const FString& NewName)
 		return;
 	}
 
-	SenderName = NewName;
+	const bool bWasSending = bIsSending;
 
 	// Spout identifies a sender by its name, so a rename is a new sender.
-	if (bIsSending)
+	if (bWasSending)
 	{
-		const bool bWasSending = bIsSending;
 		StopSending();
+	}
 
-		if (bWasSending)
-		{
-			StartSending();
-		}
+	SenderName = NewName;
+
+	if (bWasSending)
+	{
+		StartSending();
 	}
 }
 
@@ -447,29 +411,17 @@ void USpoutSenderComponent::SetSourceRenderTarget(UTextureRenderTarget2D* NewRen
 
 FString USpoutSenderComponent::GetPublishedSenderName() const
 {
-#if PLATFORM_WINDOWS
-	return Stream ? Stream->GetPublishedName() : FString();
-#else
-	return FString();
-#endif
+	return Sender.IsValid() ? Sender->GetPublishedName() : FString();
 }
 
 FIntPoint USpoutSenderComponent::GetPublishedSize() const
 {
-#if PLATFORM_WINDOWS
-	return Stream ? Stream->GetPublishedSize() : FIntPoint::ZeroValue;
-#else
-	return FIntPoint::ZeroValue;
-#endif
+	return Sender.IsValid() ? Sender->GetPublishedSize() : FIntPoint::ZeroValue;
 }
 
 FSpoutStreamStats USpoutSenderComponent::GetStats() const
 {
-#if PLATFORM_WINDOWS
-	return Stream ? Stream->GetStats() : FSpoutStreamStats();
-#else
-	return FSpoutStreamStats();
-#endif
+	return Sender.IsValid() ? Sender->GetStats() : FSpoutStreamStats();
 }
 
 #if WITH_EDITOR
@@ -477,21 +429,22 @@ void USpoutSenderComponent::PostEditChangeProperty(FPropertyChangedEvent& Proper
 {
 	const FName PropertyName = PropertyChangedEvent.GetPropertyName();
 
-	// Name, format and startup policy all change the identity or the shape of the
-	// published sender, so the stream is rebuilt rather than mutated in place.
+	// Name, format, source and startup policy all change the identity or the
+	// shape of the published sender, so the stream is rebuilt rather than
+	// mutated in place.
 	static const TSet<FName> RestartProperties =
 	{
 		GET_MEMBER_NAME_CHECKED(USpoutSenderComponent, SenderName),
 		GET_MEMBER_NAME_CHECKED(USpoutSenderComponent, PixelFormat),
+		GET_MEMBER_NAME_CHECKED(USpoutSenderComponent, SourceMode),
 		GET_MEMBER_NAME_CHECKED(USpoutSenderComponent, StartupPolicy),
 	};
 
 	if (RestartProperties.Contains(PropertyName))
 	{
-		const bool bShouldRun = bIsSending || ShouldAutoStart();
 		StopSending();
 
-		if (bShouldRun && ShouldAutoStart())
+		if (ShouldAutoStart())
 		{
 			StartSending();
 		}

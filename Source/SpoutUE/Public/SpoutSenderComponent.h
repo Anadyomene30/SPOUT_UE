@@ -5,11 +5,11 @@
 #include "CoreMinimal.h"
 #include "Components/ActorComponent.h"
 #include "RHIFwd.h"
+#include "SpoutSenderHandle.h"
 #include "SpoutUETypes.h"
 #include "SpoutSenderComponent.generated.h"
 
 class UTextureRenderTarget2D;
-class FSpoutSenderStream;
 class SWindow;
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FSpoutSenderStateEvent, const FString&, SenderName);
@@ -140,6 +140,9 @@ protected:
 	/** Pushes one frame down to the render thread. */
 	void SendFrame();
 
+	/** Fires OnSenderStarted once Spout has told us the name it actually used. */
+	void NotifyPublishedName();
+
 	/** Destroys the stream on the render thread, which is the only place it may be touched. */
 	void DestroyStream();
 
@@ -154,8 +157,8 @@ protected:
 	bool bIsSending = false;
 
 private:
-	/** Owned by the game thread, used only on the render thread. */
-	FSpoutSenderStream* Stream = nullptr;
+	/** Created on the game thread, used from whichever thread pushes frames. */
+	TSharedPtr<FSpoutSenderHandle> Sender;
 
 	FString LastPublishedName;
 	double LastSendTimeSeconds = 0.0;
