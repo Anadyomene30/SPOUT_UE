@@ -36,6 +36,18 @@ FSpoutReceiveResult FSpoutReceiverStream::Receive_RenderThread(FRHICommandListIm
 {
 	check(IsInRenderingThread());
 
+	const FSpoutReceiveResult Result = ReceiveInternal_RenderThread(RHICmdList, TargetTexture, Params);
+
+	{
+		FScopeLock Lock(&StateSection);
+		LastResult = Result;
+	}
+
+	return Result;
+}
+
+FSpoutReceiveResult FSpoutReceiverStream::ReceiveInternal_RenderThread(FRHICommandListImmediate& RHICmdList, FRHITexture* TargetTexture, const FSpoutReceiveParams& Params)
+{
 	FSpoutReceiveResult Result;
 
 	FSpoutD3D12Device* Device = FSpoutUEModule::Get().GetDevice();
@@ -280,6 +292,7 @@ void FSpoutReceiverStream::Release_RenderThread()
 
 	FScopeLock Lock(&StateSection);
 	bConnected = false;
+	LastResult = FSpoutReceiveResult();
 	Stats.Reset();
 	RateWindowStartSeconds = 0.0;
 	RateWindowFrames = 0;
@@ -318,6 +331,12 @@ bool FSpoutReceiverStream::IsConnected() const
 {
 	FScopeLock Lock(&StateSection);
 	return bConnected;
+}
+
+FSpoutReceiveResult FSpoutReceiverStream::GetLastResult() const
+{
+	FScopeLock Lock(&StateSection);
+	return LastResult;
 }
 
 #endif // PLATFORM_WINDOWS

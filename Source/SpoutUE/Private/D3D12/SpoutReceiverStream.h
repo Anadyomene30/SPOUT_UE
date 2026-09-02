@@ -68,7 +68,18 @@ public:
 
 	bool IsConnected() const;
 
+	/**
+	 * The outcome of the most recent render-thread receive.
+	 *
+	 * The game thread reads this on the following tick to resize its render
+	 * target and fire connection events; there is no synchronous path back from
+	 * the render thread, and blocking on one would defeat the point.
+	 */
+	FSpoutReceiveResult GetLastResult() const;
+
 private:
+	FSpoutReceiveResult ReceiveInternal_RenderThread(FRHICommandListImmediate& RHICmdList, FRHITexture* TargetTexture, const FSpoutReceiveParams& Params);
+
 	bool EnsureReceiveTexture_RenderThread(FRHICommandListImmediate& RHICmdList, FIntPoint Extent, EPixelFormat Format);
 	bool EnsureWrappedResource_RenderThread();
 	void NoteFrameReceived();
@@ -87,6 +98,7 @@ private:
 
 	mutable FCriticalSection StateSection;
 	FSpoutStreamStats Stats;
+	FSpoutReceiveResult LastResult;
 	bool bConnected = false;
 
 	double RateWindowStartSeconds = 0.0;

@@ -8,6 +8,9 @@ public class SpoutUE : ModuleRules
 	{
 		PCHUsage = ModuleRules.PCHUsageMode.UseExplicitOrSharedPCHs;
 
+		// The D3D12 bridge headers live under Private and are included by path.
+		PrivateIncludePaths.Add(System.IO.Path.Combine(ModuleDirectory, "Private"));
+
 		PublicDependencyModuleNames.AddRange(new string[]
 		{
 			"Core",
