@@ -1,0 +1,87 @@
+// Copyright (c) 2026 SpoutUE contributors. MIT licensed.
+//
+// Converts an Unreal render target into the exact bits a Spout receiver expects,
+// and back again on the way in: transfer function, alpha convention and image
+// orientation, in a single full-screen pass.
+
+#include "/Engine/Public/Platform.ush"
+
+Texture2D SpoutSourceTexture;
+SamplerState SpoutSourceSampler;
+
+float2 SpoutInvOutputExtent;
+
+// 0 = raw, 1 = linear -> sRGB, 2 = sRGB -> linear
+int SpoutColorSpaceMode;
+
+// 0 = opaque, 1 = straight, 2 = un-premultiply, 3 = premultiply
+int SpoutAlphaMode;
+
+uint SpoutFlipVertical;
+
+#define SPOUT_COLORSPACE_RAW			0
+#define SPOUT_COLORSPACE_LINEAR_TO_SRGB	1
+#define SPOUT_COLORSPACE_SRGB_TO_LINEAR	2
+
+#define SPOUT_ALPHA_OPAQUE			0
+#define SPOUT_ALPHA_STRAIGHT		1
+#define SPOUT_ALPHA_UNPREMULTIPLY	2
+#define SPOUT_ALPHA_PREMULTIPLY		3
+
+// The IEC 61966-2-1 curves, not the 2.2 power approximation: Unreal's own
+// sRGB handling uses these, and a mismatch shows up as a visible shift in the
+// darks when a feed is round-tripped through another application.
+float3 SpoutLinearToSrgb(float3 Linear)
+{
+	Linear = max(Linear, 0.0f);
+	const float3 Lo = Linear * 12.92f;
+	const float3 Hi = 1.055f * pow(Linear, 1.0f / 2.4f) - 0.055f;
+	return select(Linear <= 0.0031308f, Lo, Hi);
+}
+
+float3 SpoutSrgbToLinear(float3 Encoded)
+{
+	Encoded = max(Encoded, 0.0f);
+	const float3 Lo = Encoded / 12.92f;
+	const float3 Hi = pow((Encoded + 0.055f) / 1.055f, 2.4f);
+	return select(Encoded <= 0.04045f, Lo, Hi);
+}
+
+void MainPS(float4 SvPosition : SV_POSITION, out float4 OutColor : SV_Target0)
+{
+	float2 UV = SvPosition.xy * SpoutInvOutputExtent;
+
+	if (SpoutFlipVertical != 0)
+	{
+		UV.y = 1.0f - UV.y;
+	}
+
+	float4 Color = SpoutSourceTexture.SampleLevel(SpoutSourceSampler, UV, 0);
+
+	// Un-premultiply before the transfer function: the curve is only meaningful
+	// on straight colour, and applying it to premultiplied values darkens edges.
+	if (SpoutAlphaMode == SPOUT_ALPHA_UNPREMULTIPLY)
+	{
+		Color.rgb = Color.a > 1e-5f ? Color.rgb / Color.a : 0.0f;
+	}
+
+	if (SpoutColorSpaceMode == SPOUT_COLORSPACE_LINEAR_TO_SRGB)
+	{
+		Color.rgb = SpoutLinearToSrgb(Color.rgb);
+	}
+	else if (SpoutColorSpaceMode == SPOUT_COLORSPACE_SRGB_TO_LINEAR)
+	{
+		Color.rgb = SpoutSrgbToLinear(Color.rgb);
+	}
+
+	if (SpoutAlphaMode == SPOUT_ALPHA_OPAQUE)
+	{
+		Color.a = 1.0f;
+	}
+	else if (SpoutAlphaMode == SPOUT_ALPHA_PREMULTIPLY)
+	{
+		Color.rgb *= Color.a;
+	}
+
+	OutColor = Color;
+}

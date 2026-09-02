@@ -1,0 +1,53 @@
+{
+	"FileVersion": 3,
+	"Version": 1,
+	"VersionName": "1.0.0",
+	"FriendlyName": "Spout UE",
+	"Description": "Zero-latency GPU texture sharing between Unreal Engine 5 and any Spout-capable application (OBS, Resolume, TouchDesigner, Notch, MadMapper...). Send any render target, CineCamera or viewport out over Spout, and receive Spout streams back into render targets and materials. Windows / DirectX 12 only.",
+	"Category": "Media Players",
+	"CreatedBy": "SpoutUE contributors",
+	"CreatedByURL": "https://github.com/Anadyomene30/SPOUT_UE",
+	"DocsURL": "https://github.com/Anadyomene30/SPOUT_UE#readme",
+	"MarketplaceURL": "",
+	"SupportURL": "https://github.com/Anadyomene30/SPOUT_UE/issues",
+	"EngineVersion": "5.8.0",
+	"CanContainContent": true,
+	"IsBetaVersion": false,
+	"IsExperimentalVersion": false,
+	"Installed": false,
+	"SupportedTargetPlatforms": [
+		"Win64"
+	],
+	"Modules": [
+		{
+			"Name": "SpoutSDK",
+			"Type": "Runtime",
+			"LoadingPhase": "PreDefault",
+			"PlatformAllowList": [ "Win64" ]
+		},
+		{
+			"Name": "SpoutUE",
+			"Type": "Runtime",
+			"LoadingPhase": "Default",
+			"PlatformAllowList": [ "Win64" ]
+		},
+		{
+			"Name": "SpoutUEMedia",
+			"Type": "Runtime",
+			"LoadingPhase": "Default",
+			"PlatformAllowList": [ "Win64" ]
+		},
+		{
+			"Name": "SpoutUEEditor",
+			"Type": "Editor",
+			"LoadingPhase": "PostEngineInit",
+			"PlatformAllowList": [ "Win64" ]
+		}
+	],
+	"Plugins": [
+		{
+			"Name": "MediaIOFramework",
+			"Enabled": true
+		}
+	]
+}
