@@ -93,15 +93,15 @@ enum class ESpoutResolution : uint8
 	R2160p			UMETA(DisplayName = "4K UHD (3840 x 2160)"),
 };
 
-/** What a capture component renders. */
+/** Where a sender takes its pixels from. */
 UENUM(BlueprintType)
-enum class ESpoutCaptureSource : uint8
+enum class ESpoutSourceMode : uint8
 {
-	/** Render the owning camera into the plugin's own render target. */
-	Camera			UMETA(DisplayName = "Camera"),
+	/** Publish the contents of a render target. */
+	RenderTarget	UMETA(DisplayName = "Render target"),
 
-	/** Mirror the game (or editor) viewport back buffer, HUD and UI included. */
-	Viewport		UMETA(DisplayName = "Viewport back buffer"),
+	/** Publish the presented frame, HUD and UI included. Needs a game viewport. */
+	Viewport		UMETA(DisplayName = "Game viewport"),
 };
 
 /** Details of one Spout sender currently published on this machine. */

@@ -85,3 +85,25 @@ void MainPS(float4 SvPosition : SV_POSITION, out float4 OutColor : SV_Target0)
 
 	OutColor = Color;
 }
+
+// ----------------------------------------------------------------------------
+// Burn-in compositing
+// ----------------------------------------------------------------------------
+//
+// UMG renders its overlay into a separate transparent target; this pass lays it
+// over the captured frame. Kept as its own pass rather than folded into the
+// conversion above so that a capture with no burn-in pays nothing for it.
+
+Texture2D SpoutOverlayTexture;
+SamplerState SpoutOverlaySampler;
+float2 SpoutOverlayInvExtent;
+
+// UMG hands us straight alpha, so the overlay is composited "over" rather than
+// added: premultiplying here would double-darken anti-aliased text edges.
+void ComposeOverlayPS(float4 SvPosition : SV_POSITION, out float4 OutColor : SV_Target0)
+{
+	const float2 UV = SvPosition.xy * SpoutOverlayInvExtent;
+	const float4 Overlay = SpoutOverlayTexture.SampleLevel(SpoutOverlaySampler, UV, 0);
+
+	OutColor = Overlay;
+}

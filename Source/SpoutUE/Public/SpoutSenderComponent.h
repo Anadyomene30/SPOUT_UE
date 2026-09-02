@@ -4,11 +4,13 @@
 
 #include "CoreMinimal.h"
 #include "Components/ActorComponent.h"
+#include "RHIFwd.h"
 #include "SpoutUETypes.h"
 #include "SpoutSenderComponent.generated.h"
 
 class UTextureRenderTarget2D;
 class FSpoutSenderStream;
+class SWindow;
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FSpoutSenderStateEvent, const FString&, SenderName);
 
@@ -47,8 +49,19 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Spout|Sender")
 	FString SenderName;
 
-	/** The render target whose contents are shared. */
+	/**
+	 * What gets published.
+	 *
+	 * The viewport source is the whole presented frame, so it carries everything
+	 * the render target route cannot: temporal upscaling, UMG, the HUD, console
+	 * output. It is only available where there is a game viewport, which means
+	 * PIE and packaged builds, not the editor viewport.
+	 */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Spout|Sender")
+	ESpoutSourceMode SourceMode = ESpoutSourceMode::RenderTarget;
+
+	/** The render target whose contents are shared, when SourceMode is Render target. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Spout|Sender", meta = (EditCondition = "SourceMode == ESpoutSourceMode::RenderTarget"))
 	TObjectPtr<UTextureRenderTarget2D> SourceRenderTarget;
 
 	/** Format of the shared texture. 8 bit BGRA is the safest choice for wide compatibility. */
@@ -130,6 +143,13 @@ protected:
 	/** Destroys the stream on the render thread, which is the only place it may be touched. */
 	void DestroyStream();
 
+	/** Subscribes to the presented frame when SourceMode is Viewport. */
+	void BindViewportSource();
+	void UnbindViewportSource();
+
+	/** Called on the render thread once per presented frame. */
+	void OnBackBufferReady_RenderThread(SWindow& Window, const FTextureRHIRef& BackBuffer);
+
 	UPROPERTY(Transient)
 	bool bIsSending = false;
 
@@ -139,4 +159,25 @@ private:
 
 	FString LastPublishedName;
 	double LastSendTimeSeconds = 0.0;
+
+	/**
+	 * Send settings snapshotted for the render thread.
+	 *
+	 * The viewport path runs from a present callback rather than from the
+	 * component's tick, so it cannot read the UPROPERTYs directly.
+	 */
+	mutable FCriticalSection ViewportSettingsSection;
+	FString ViewportSenderName;
+	ESpoutPixelFormat ViewportPixelFormat = ESpoutPixelFormat::Auto;
+	ESpoutColorSpace ViewportColorSpace = ESpoutColorSpace::MatchViewport;
+	ESpoutAlphaMode ViewportAlphaMode = ESpoutAlphaMode::Opaque;
+	bool bViewportFlipVertical = false;
+
+	/** Copy of the presented frame, so the sender never samples the swap chain. */
+	FTextureRHIRef ViewportStaging;
+
+	/** Slate presents every window it owns; this is the one worth copying. */
+	TWeakPtr<SWindow> GameViewportWindow;
+
+	bool bViewportSourceBound = false;
 };

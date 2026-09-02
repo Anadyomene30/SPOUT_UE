@@ -41,4 +41,14 @@ namespace SpoutUE
 		FRHITexture* Source,
 		FRHITexture* Destination,
 		const FConversionSettings& Settings);
+
+	/**
+	 * Composites a straight-alpha overlay (a UMG burn-in) over Destination.
+	 *
+	 * Must be called on the render thread.
+	 */
+	void ComposeOverlay_RenderThread(
+		FRHICommandListImmediate& RHICmdList,
+		FRHITexture* Overlay,
+		FRHITexture* Destination);
 }

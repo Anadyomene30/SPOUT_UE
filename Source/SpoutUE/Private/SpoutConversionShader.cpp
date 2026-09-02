@@ -36,6 +36,25 @@ namespace
 		}
 	};
 
+	class FSpoutOverlayPS : public FGlobalShader
+	{
+	public:
+		DECLARE_GLOBAL_SHADER(FSpoutOverlayPS);
+		SHADER_USE_PARAMETER_STRUCT(FSpoutOverlayPS, FGlobalShader);
+
+		BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
+			SHADER_PARAMETER_RDG_TEXTURE(Texture2D, SpoutOverlayTexture)
+			SHADER_PARAMETER_SAMPLER(SamplerState, SpoutOverlaySampler)
+			SHADER_PARAMETER(FVector2f, SpoutOverlayInvExtent)
+			RENDER_TARGET_BINDING_SLOTS()
+		END_SHADER_PARAMETER_STRUCT()
+
+		static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
+		{
+			return IsFeatureLevelSupported(Parameters.Platform, ERHIFeatureLevel::SM5);
+		}
+	};
+
 	int32 ToShaderColorSpace(ESpoutColorSpace ColorSpace)
 	{
 		switch (ColorSpace)
@@ -71,6 +90,7 @@ namespace
 }
 
 IMPLEMENT_GLOBAL_SHADER(FSpoutConversionPS, "/Plugin/SpoutUE/Private/SpoutConversion.usf", "MainPS", SF_Pixel);
+IMPLEMENT_GLOBAL_SHADER(FSpoutOverlayPS, "/Plugin/SpoutUE/Private/SpoutConversion.usf", "ComposeOverlayPS", SF_Pixel);
 
 namespace SpoutUE
 {
@@ -124,6 +144,52 @@ namespace SpoutUE
 			PixelShader,
 			Parameters,
 			FIntRect(0, 0, DestinationExtent.X, DestinationExtent.Y));
+
+		GraphBuilder.Execute();
+	}
+
+	void ComposeOverlay_RenderThread(
+		FRHICommandListImmediate& RHICmdList,
+		FRHITexture* Overlay,
+		FRHITexture* Destination)
+	{
+		check(IsInRenderingThread());
+
+		if (!Overlay || !Destination)
+		{
+			return;
+		}
+
+		const FIntPoint DestinationExtent(Destination->GetSizeX(), Destination->GetSizeY());
+		if (DestinationExtent.X <= 0 || DestinationExtent.Y <= 0)
+		{
+			return;
+		}
+
+		FRDGBuilder GraphBuilder(RHICmdList);
+
+		FRDGTextureRef OverlayRDG = RegisterExternalTexture(GraphBuilder, Overlay, TEXT("Spout.Overlay"));
+		FRDGTextureRef DestinationRDG = RegisterExternalTexture(GraphBuilder, Destination, TEXT("Spout.OverlayDest"));
+
+		FSpoutOverlayPS::FParameters* Parameters = GraphBuilder.AllocParameters<FSpoutOverlayPS::FParameters>();
+		Parameters->SpoutOverlayTexture = OverlayRDG;
+		Parameters->SpoutOverlaySampler = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
+		Parameters->SpoutOverlayInvExtent = FVector2f(1.f / DestinationExtent.X, 1.f / DestinationExtent.Y);
+
+		// Load, not clear: the capture underneath is what the overlay lands on.
+		Parameters->RenderTargets[0] = FRenderTargetBinding(DestinationRDG, ERenderTargetLoadAction::ELoad);
+
+		const TShaderMapRef<FSpoutOverlayPS> PixelShader(GetGlobalShaderMap(GMaxRHIFeatureLevel));
+
+		FPixelShaderUtils::AddFullscreenPass(
+			GraphBuilder,
+			GetGlobalShaderMap(GMaxRHIFeatureLevel),
+			RDG_EVENT_NAME("Spout.ComposeOverlay"),
+			PixelShader,
+			Parameters,
+			FIntRect(0, 0, DestinationExtent.X, DestinationExtent.Y),
+			// Straight-alpha "over": UMG output is not premultiplied.
+			TStaticBlendState<CW_RGBA, BO_Add, BF_SourceAlpha, BF_InverseSourceAlpha, BO_Add, BF_One, BF_InverseSourceAlpha>::GetRHI());
 
 		GraphBuilder.Execute();
 	}

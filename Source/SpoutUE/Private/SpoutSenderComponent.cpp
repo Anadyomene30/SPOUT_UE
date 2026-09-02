@@ -2,8 +2,13 @@
 
 #include "SpoutSenderComponent.h"
 
+#include "Engine/Engine.h"
+#include "Engine/GameViewportClient.h"
 #include "Engine/TextureRenderTarget2D.h"
+#include "Framework/Application/SlateApplication.h"
+#include "RHICommandList.h"
 #include "RenderingThread.h"
+#include "Widgets/SWindow.h"
 #include "SpoutSettings.h"
 #include "SpoutUE.h"
 #include "TextureResource.h"
@@ -101,6 +106,21 @@ void USpoutSenderComponent::StartSending()
 	bIsSending = true;
 	LastSendTimeSeconds = 0.0;
 	LastPublishedName.Reset();
+
+#if PLATFORM_WINDOWS
+	// Created here rather than lazily: in viewport mode the send runs from a
+	// present callback, and a pointer written by one thread and read by the other
+	// is a race worth not having.
+	if (!Stream)
+	{
+		Stream = new FSpoutSenderStream();
+	}
+#endif
+
+	if (SourceMode == ESpoutSourceMode::Viewport)
+	{
+		BindViewportSource();
+	}
 }
 
 void USpoutSenderComponent::StopSending()
@@ -113,6 +133,7 @@ void USpoutSenderComponent::StopSending()
 	const FString StoppedName = LastPublishedName.IsEmpty() ? SenderName : LastPublishedName;
 
 	bIsSending = false;
+	UnbindViewportSource();
 	DestroyStream();
 
 	if (!LastPublishedName.IsEmpty())
@@ -136,11 +157,150 @@ void USpoutSenderComponent::DestroyStream()
 	Stream = nullptr;
 
 	ENQUEUE_RENDER_COMMAND(SpoutReleaseSender)(
-		[Released](FRHICommandListImmediate& RHICmdList)
+		[this, Released](FRHICommandListImmediate& RHICmdList)
 		{
 			Released->Release_RenderThread();
 			delete Released;
+
+			ViewportStaging.SafeRelease();
 		});
+
+	// The staging texture is only touched on the render thread, and the command
+	// above is the last thing that will touch it, so waiting here keeps the
+	// component from being destroyed out from under it.
+	FlushRenderingCommands();
+#endif
+}
+
+void USpoutSenderComponent::BindViewportSource()
+{
+#if PLATFORM_WINDOWS
+	if (bViewportSourceBound)
+	{
+		return;
+	}
+
+	if (!FSlateApplication::IsInitialized() || !FSlateApplication::Get().GetRenderer())
+	{
+		UE_LOG(LogSpout, Error, TEXT("Sender '%s' cannot use the viewport source: Slate is not available (running headless?)."), *SenderName);
+		return;
+	}
+
+	if (!GEngine || !GEngine->GameViewport)
+	{
+		UE_LOG(LogSpout, Warning,
+			TEXT("Sender '%s' is set to the viewport source but there is no game viewport. This mode works in PIE and packaged builds; use a render target to output from the editor viewport."),
+			*SenderName);
+		return;
+	}
+
+	GameViewportWindow = GEngine->GameViewport->GetWindow();
+	if (!GameViewportWindow.IsValid())
+	{
+		UE_LOG(LogSpout, Warning, TEXT("Sender '%s': the game viewport has no window yet; the viewport source will stay idle."), *SenderName);
+		return;
+	}
+
+	FSlateApplication::Get().GetRenderer()->OnBackBufferReadyToPresent().AddRaw(this, &USpoutSenderComponent::OnBackBufferReady_RenderThread);
+	bViewportSourceBound = true;
+#endif
+}
+
+void USpoutSenderComponent::UnbindViewportSource()
+{
+#if PLATFORM_WINDOWS
+	if (!bViewportSourceBound)
+	{
+		return;
+	}
+
+	if (FSlateApplication::IsInitialized() && FSlateApplication::Get().GetRenderer())
+	{
+		FSlateApplication::Get().GetRenderer()->OnBackBufferReadyToPresent().RemoveAll(this);
+	}
+
+	bViewportSourceBound = false;
+	GameViewportWindow.Reset();
+
+	// The delegate fires on the render thread, so an in-flight call has to finish
+	// before this component can be considered detached from it.
+	FlushRenderingCommands();
+#endif
+}
+
+void USpoutSenderComponent::OnBackBufferReady_RenderThread(SWindow& Window, const FTextureRHIRef& BackBuffer)
+{
+#if PLATFORM_WINDOWS
+	check(IsInRenderingThread());
+
+	if (!bIsSending || !BackBuffer.IsValid())
+	{
+		return;
+	}
+
+	// Slate presents every window it owns, including editor tool windows, so the
+	// game viewport's own window is the only one worth copying.
+	const TSharedPtr<SWindow> TargetWindow = GameViewportWindow.Pin();
+	if (!TargetWindow.IsValid() || TargetWindow.Get() != &Window)
+	{
+		return;
+	}
+
+	FSpoutSendParams Params;
+	{
+		FScopeLock Lock(&ViewportSettingsSection);
+		Params.SenderName = ViewportSenderName;
+		Params.PixelFormat = ViewportPixelFormat;
+		Params.Conversion.ColorSpace = ViewportColorSpace;
+		Params.Conversion.AlphaMode = ViewportAlphaMode;
+		Params.Conversion.bFlipVertical = bViewportFlipVertical;
+	}
+
+	if (Params.SenderName.IsEmpty())
+	{
+		return;
+	}
+
+	if (!Stream)
+	{
+		return;
+	}
+
+	FRHICommandListImmediate& RHICmdList = FRHICommandListExecutor::GetImmediateCommandList();
+
+	const FIntPoint BackBufferExtent(BackBuffer->GetSizeX(), BackBuffer->GetSizeY());
+
+	// The swap chain buffer is not something to sample from or to hand to another
+	// device, so the frame is copied into a texture of our own first.
+	if (!ViewportStaging.IsValid()
+		|| ViewportStaging->GetSizeX() != BackBufferExtent.X
+		|| ViewportStaging->GetSizeY() != BackBufferExtent.Y
+		|| ViewportStaging->GetFormat() != BackBuffer->GetFormat())
+	{
+		const FRHITextureCreateDesc Desc =
+			FRHITextureCreateDesc::Create2D(TEXT("Spout.ViewportStaging"))
+			.SetExtent(BackBufferExtent)
+			.SetFormat(BackBuffer->GetFormat())
+			.SetNumMips(1)
+			.SetFlags(ETextureCreateFlags::ShaderResource | ETextureCreateFlags::RenderTargetable)
+			.SetInitialState(ERHIAccess::CopyDest);
+
+		ViewportStaging = RHICmdList.CreateTexture(Desc);
+	}
+
+	if (!ViewportStaging.IsValid())
+	{
+		return;
+	}
+
+	RHICmdList.Transition(FRHITransitionInfo(BackBuffer, ERHIAccess::Unknown, ERHIAccess::CopySrc));
+	RHICmdList.Transition(FRHITransitionInfo(ViewportStaging, ERHIAccess::Unknown, ERHIAccess::CopyDest));
+	RHICmdList.CopyTexture(BackBuffer, ViewportStaging, FRHICopyTextureInfo());
+
+	// Hand the swap chain buffer back in the state the presenter expects.
+	RHICmdList.Transition(FRHITransitionInfo(BackBuffer, ERHIAccess::CopySrc, ERHIAccess::Present));
+
+	Stream->Send_RenderThread(RHICmdList, ViewportStaging.GetReference(), Params);
 #endif
 }
 
@@ -150,6 +310,34 @@ void USpoutSenderComponent::TickComponent(float DeltaTime, ELevelTick TickType, 
 
 	if (!bIsSending)
 	{
+		return;
+	}
+
+	if (SourceMode == ESpoutSourceMode::Viewport)
+	{
+		// The viewport path is driven by the present callback, so all this tick
+		// does is keep the render thread's copy of the settings current and
+		// surface the published name once Spout has created the sender.
+		{
+			FScopeLock Lock(&ViewportSettingsSection);
+			ViewportSenderName = SenderName;
+			ViewportPixelFormat = PixelFormat;
+			ViewportColorSpace = ColorSpace;
+			ViewportAlphaMode = AlphaMode;
+			bViewportFlipVertical = bFlipVertical;
+		}
+
+		if (Stream)
+		{
+			const FString Published = Stream->GetPublishedName();
+			if (!Published.IsEmpty() && Published != LastPublishedName)
+			{
+				LastPublishedName = Published;
+				OnSenderStarted.Broadcast(Published);
+				UE_LOG(LogSpout, Log, TEXT("Spout sender '%s' is live (viewport)."), *Published);
+			}
+		}
+
 		return;
 	}
 
@@ -185,7 +373,7 @@ void USpoutSenderComponent::SendFrame()
 
 	if (!Stream)
 	{
-		Stream = new FSpoutSenderStream();
+		return;
 	}
 
 	FSpoutSendParams Params;
