@@ -8,8 +8,10 @@ Send any render target, CineCamera or the game viewport out over Spout, and pull
 Spout streams back into render targets and materials. Nothing is compressed,
 nothing is read back to the CPU, and nothing leaves the GPU.
 
-> **Status:** builds cleanly on UE 5.5 and 5.8 (editor, game and Shipping
-> targets). Not yet tested at runtime — see [Building](#building).
+> **Status:** builds cleanly and tested end to end against Resolume Arena on
+> UE 5.5 and 5.8 — sending, receiving, the viewport source, the Media Output,
+> the editor world and PIE. 5.6 and 5.7 are expected to work but have not been
+> built.
 
 ---
 
@@ -50,15 +52,56 @@ ever lowered.
 
 ## Installing
 
+### With the installer
+
+Run `SpoutUE-Setup-<version>.exe`. It finds every Unreal Engine installed on the
+machine, lists the versions it carries a build for, and installs the plugin into
+`Engine\Plugins\Marketplace\SpoutUE` of the ones you tick — where Fab installs
+engine plugins, so it is available to every project of that engine, Blueprint
+projects included. It asks for administrator rights because engines live under
+Program Files. Then, in each project: **Edit → Plugins → Spout UE**, enable,
+restart the editor.
+
+Run it again to update or uninstall. Close the editor of an engine before
+installing into it: its DLLs are locked while it runs.
+
+The installer also works from the command line:
+
+```
+SpoutUE-Setup-1.0.0.exe /install                 every supported engine found
+SpoutUE-Setup-1.0.0.exe /install /engine=5.8     only UE 5.8
+SpoutUE-Setup-1.0.0.exe /uninstall
+SpoutUE-Setup-1.0.0.exe /install /engineroot="D:\UE_5.8" /log=install.txt
+```
+
+`/engineroot` points at engines the installer would not find on its own (source
+builds, unusual locations).
+
+### From source, in a project
+
 ```
 YourProject/
 └── Plugins/
     └── SpoutUE/          <- this repository
 ```
 
-Then regenerate project files and build. There is no DLL to copy and nothing to
-install system-wide: the Spout SDK is compiled into the plugin, so packaged
-builds carry everything they need.
+Then regenerate project files and build. There is no DLL to copy: the Spout SDK
+is compiled into the plugin, so packaged builds carry everything they need. A
+project copy takes precedence over an engine install of the same plugin.
+
+### Building the installer
+
+```
+Installer\Build-Installer.ps1
+```
+
+packages the plugin with `RunUAT BuildPlugin` for every UE 5.x installed on the
+machine, drops the debug symbols, and compiles `Installer\out\SpoutUE-Setup-<version>.exe`
+around the packages with the C# compiler that ships with Windows — nothing else
+to install. It ends with a self-test that installs into and uninstalls from
+throwaway engine folders. `-Engines 5.8` limits the versions, `-SkipPackage`
+reuses packages already built. An engine whose packaging fails is left out with
+a warning; the installer then shows that version as having no build.
 
 ## Quick start
 
@@ -88,7 +131,9 @@ point a **Spout Sender** at `Get Capture Target`.
 Set a sender's **Source Mode** to *Game viewport*. This publishes the presented
 frame, so it carries everything a scene capture cannot: TSR/DLSS upscaling, UMG,
 the HUD, debug draw. It requires a game viewport, which means PIE and packaged
-builds — not the editor viewport.
+builds — not the editor viewport. In PIE only the game viewport is published,
+not the rest of the editor window. The frame is already encoded for the screen,
+so *Match viewport* publishes it as is.
 
 ### Receive
 
@@ -104,6 +149,15 @@ The render target is created and resized for you to match the sender.
 
 Create a **Spout Media Output** asset for the routes that already speak Media IO:
 nDisplay output mapping, Movie Render Queue, the Media Capture panel.
+
+### In the editor, with another application in front
+
+Senders and receivers set to *Editor and game* keep running while you work in
+Resolume or OBS, even with the editor minimised. Unreal normally stops ticking
+its world in the background, so while a Spout stream runs in the editor the
+plugin keeps the level viewport realtime and suspends *Use Less CPU when in
+Background* (in memory only; the setting comes back once the last stream stops).
+The log says so when it happens.
 
 ## Feature overview
 
@@ -172,10 +226,11 @@ cannot open at all.
 
 So the plugin layers a single **D3D11On12** device on top of Unreal's own D3D12
 device *and its graphics queue*. Because the queue is shared, every copy the
-D3D11 side submits is naturally ordered against Unreal's rendering; no fence of
-our own is needed. What does need care is that Unreal has actually submitted the
-work that produced the frame, which is why the streams flush the immediate command list
-(`ImmediateFlush(DispatchToRHIThread)`) before acquiring a wrapped resource.
+D3D11 side submits is ordered against Unreal's rendering; no fence of our own is
+needed. What does need care is that Unreal has actually submitted the work that
+produced the frame, so the D3D11 side never runs from the render thread: it runs
+through `ID3D12DynamicRHI::RHIRunOnQueue`, on Unreal's submission thread, right
+after the commands that produced the frame.
 
 ```
 UTextureRenderTarget2D
@@ -194,8 +249,13 @@ Two details the obvious implementation gets wrong, and that this one handles:
   views over one resource. A sender advertising a typeless format is unusable —
   receivers have no way to interpret the bits — so the plugin publishes an
   explicit typed format instead of the one read off the texture.
-- **Frame ordering.** The conversion pass can still be sitting in an open command
-  list when the D3D11 side copies, which shows receivers the previous frame.
+- **Frame ordering.** Recorded from the render thread, the D3D11 copy reaches the
+  GPU queue before the conversion pass that produced the frame, which is still
+  on the RHI thread.
+- **Resource states.** Unreal never sees what D3D11On12 does to a resource, and
+  does not track the state of every texture either. Each wrapper is declared in
+  the state Unreal believes the texture is in, and D3D11On12 transitions around
+  its own copy. Verified with the D3D12 debug layer.
 
 The vendored SDK sources under `Source/ThirdParty/SpoutSDK/Spout` are unmodified
 upstream files, so they can be refreshed from Spout2 without re-applying a patch;
@@ -206,9 +266,10 @@ the one behaviour change lives in `FSpoutSenderDX`, a subclass beside them.
 | Module | Type | Contents |
 |---|---|---|
 | `SpoutSDK` | Runtime | vendored Spout 2 SDK plus `FSpoutSenderDX` |
+| `SpoutUEShaders` | Runtime | conversion shaders, loaded early as global shaders must be |
 | `SpoutUE` | Runtime | bridge, streams, components, actors, subsystem, settings |
 | `SpoutUEMedia` | Runtime | `USpoutMediaOutput` / `USpoutMediaCapture` |
-| `SpoutUEEditor` | Editor | sender picker, live status |
+| `SpoutUEEditor` | Editor | sender picker, live status, keeping the editor awake for Spout |
 
 ## Known limitations
 
@@ -241,6 +302,10 @@ Spout's own SpoutSettings utility.
 
 **The feed is one frame behind.** Cap `Max Frame Rate` on the sender to the rate
 the receiver actually consumes; publishing faster than that gains nothing.
+
+**During PIE a sender shows up as `Name_1`.** The editor-world copy of the same
+actor is still publishing as `Name` (*Editor and game* policy). Use *Game only*
+on actors meant for play, or follow `Name_1` in the receiving application.
 
 **The receiver keeps reconnecting.** `Get Stats → Reconnect Count` climbing means
 the sender is restarting — usually another Unreal instance fighting for the same

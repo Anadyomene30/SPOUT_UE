@@ -11,6 +11,9 @@ DerivedDataCache/
 .vscode/
 .idea/
 
+# Installer build output
+Installer/out/
+
 # OS
 Thumbs.db
 .DS_Store

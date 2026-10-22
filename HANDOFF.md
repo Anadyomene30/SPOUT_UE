@@ -1,24 +1,53 @@
 # Handoff notes
 
 Originally written at `d853af9`; updated after the first Windows build (UE 5.5
-and 5.8), for whoever picks this up next. The README is the user-facing documentation;
-this file is the engineering state: what is uncertain, what was decided on
-purpose, and what to do first.
+and 5.8) and again after the first runtime test against Resolume, for whoever
+picks this up next. The README is the user-facing documentation; this file is
+the engineering state: what is uncertain, what was decided on purpose, and what
+to do first.
 
 ---
 
 ## Where things stand
 
-The plugin is feature-complete and **compiles cleanly on UE 5.5 and UE 5.8**
-(Windows, MSVC 14.44): editor, Development game and Shipping game targets, all
-four modules, every file also built outside unity blobs. The only remaining
-warning is C4828 from a non-UTF-8 byte in a comment of the vendored
-`SpoutCopy.cpp`, left alone on purpose (see *Vendored SDK*). 5.6 and 5.7 have
-not been built — no engine installed — but every fix below is written to work
-on both sides of whichever release changed the API.
+The plugin **compiles cleanly on UE 5.5 and UE 5.8** (Windows, MSVC 14.44) and
+**has been run end to end against Resolume Arena on both**, with the D3D12 debug
+layer on (`-d3ddebug`). 5.6 and 5.7 have still not been built. The only build
+warning left is C4828 from a non-UTF-8 byte in a comment of the vendored
+`SpoutCopy.cpp`, left alone on purpose (see *Vendored SDK*).
 
-**It has never been run.** Nothing below about runtime behaviour has been
-observed yet.
+What was exercised, on an RTX 4090 with Resolume 7 on the same machine:
+
+| Path | Result |
+|---|---|
+| Cine camera → Resolume | live, correct exposure and colour |
+| Resolume → receiver → loopback sender → Resolume | identical to the source: max error 0.0007 (under 1/255), no flip, no double gamma |
+| Game viewport source (`-game` and PIE) | live, colours match the screen, the 10-bit format is accepted by Resolume |
+| Media Output (scene viewport capture in PIE) | live, matches the viewport source within 1/255 |
+| Editor world, *Editor and game* policy | live in the foreground, in the background and with the editor minimised (120 fps) |
+| 4 PIE start/stop cycles, live resize 1080p → 720p, live rename | no crash, senders appear and disappear cleanly |
+| Clean quit | every sender leaves Spout's directory |
+| D3D12 debug layer | no errors, apart from the benign `ReflectSharedProperties` note below |
+
+The test harness lives outside the repository (`C:\SB\h55`, `C:\SB\h58`): a
+Python script that builds a test level, editor scripts that drive PIE and the
+Media Output, and `spoutgrab`, a small tool built on the vendored SDK that dumps
+any sender as float RGBA so two senders can be compared pixel for pixel.
+
+### What the first run found
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| Crash on the first frame sent: `!bInitializedSerializationHistory` | the global shaders lived in `SpoutUE`, which loads at `Default`; shader types must exist before the global shader map is built | new `SpoutUEShaders` module, no UObjects, loaded at `PostConfigInit`, owns the shader types and the `/Plugin/SpoutUE` mapping |
+| Debug layer: the 11On12 copy reads `Spout.SenderSurface` in `RENDER_TARGET`, the next draw finds it in `COPY_SOURCE` | the D3D12 RHI never applied the `RTV → CopySrc` transition we asked for, so Unreal and 11On12 disagreed about the state | the wrapper is declared in the state Unreal believes the surface is in (`RENDER_TARGET`) and 11On12 issues its own barriers around its copy; the sender always ends on a raster write so that belief is deterministic |
+| Receiver surface: the same class of problem, mostly invisible to the debug layer | a shader-resource-only texture gets **no** state tracking in the D3D12 RHI; every transition on it is dropped and it is assumed to sit in SRV forever | wrapper declared in SRV, no Unreal-side transition |
+| D3D11 work could reach the queue ahead of the frame it copies | the copy was recorded from the render thread while Unreal's commands for that frame were still on the RHI thread | all 11On12 work goes through `FSpoutD3D12Device::RunOnGraphicsQueue_RenderThread` (see *Decisions*) |
+| Viewport source and Media Output washed out | "Match viewport" encoded a frame that is already display-encoded | for those two sources Match viewport passes the frame through |
+| Viewport source in PIE published the whole editor window | in PIE the back buffer is the editor's main window | cropped to the game viewport widget's rectangle |
+| Viewport source never started on 5.8 `-game` | the game window appears a few frames after `BeginPlay` and binding was tried once | retried from the tick, quietly |
+| Media Output stuck in `Preparing`, no frame | the implementation never called `SetState(Capturing)` | called at the end of `InitializeCapture`, as Epic's own captures do |
+| Editor-world senders froze whenever the editor lost focus | without a realtime viewport the editor ticks its world in `TimeOnly` mode; with *Use Less CPU when in Background* it pushes a non-realtime override on every viewport each frame; minimised, it caps itself at 3 fps | while an editor-world stream runs, the editor module holds a realtime override on the level viewports, suspends that setting in memory and registers a `ShouldDisableCPUThrottling` delegate |
+| Commandlets (cooking, scripted level building) logged `Error: ... cannot start` | components auto-started without an RHI | no auto-start under `IsRunningCommandlet()` |
 
 ### Fixes the first build needed
 
@@ -29,7 +58,6 @@ observed yet.
 | `SpoutSenderComponent` | 5.8's `OnBackBufferReadyToPresent` passes `ISlateViewportProvider&` instead of the back buffer | generic lambda + `GetBackBuffer` overloads, the provider one behind `__has_include`; delegate tracked by handle |
 | `SpoutUE.Build.cs` | 5.5's `D3D12RHI` does not re-export `d3dx12.h` | `AddEngineThirdPartyPrivateStaticDependencies(Target, "DX12")` |
 | four `.cpp` files | `UWorld` used through transitive includes only; broke non-unity builds | include `Engine/World.h` |
-| both streams | `SubmitCommandsHint` deprecated in 5.8 | `ImmediateFlush(EImmediateFlushType::DispatchToRHIThread)`, which is what it forwarded to |
 
 ### Building it locally — gotchas met on this machine
 
@@ -45,80 +73,81 @@ observed yet.
 - **Game targets need a C++ host project.** A content-only project's
   `UnrealGame` build just reuses the engine's prebuilt executable and never
   compiles the plugin.
+- **A crash leaves `CrashReportClientEditor.exe` holding the plugin DLLs**, and
+  the next link fails with LNK1104 until it is closed.
 
 | Module | What it is |
 |---|---|
 | `SpoutSDK` | Spout 2 SDK vendored verbatim (upstream `c2bcc12`, BSD 2-Clause) + `FSpoutSenderDX` |
+| `SpoutUEShaders` | the conversion and overlay global shaders, loaded at `PostConfigInit` |
 | `SpoutUE` | D3D11On12 bridge, streams, components, actors, subsystem, settings, Blueprint API |
 | `SpoutUEMedia` | `USpoutMediaOutput` / `USpoutMediaCapture` |
-| `SpoutUEEditor` | sender picker, live sender status |
+| `SpoutUEEditor` | sender picker, live sender status, keeping the editor awake while Spout runs in it |
 
 Target: **UE 5.5 → 5.8**, Windows 64-bit, **D3D12 only**.
 
-## Do this first
+---
 
-Run it. The cheapest functional test: drop a **Spout Sender
-Manager** in a level, assign any render target, set Startup Policy to *Editor
-and game*, and open OBS with a Spout2 Capture source. If the image appears at
-all, the whole sharing path works and what remains is polish.
+## What is still open
+
+### 1. 5.6 and 5.7
+
+Never built. The viewport source picks its back buffer overload by whether
+`Slate/SlateViewportProvider.h` exists; that is right for 5.5 and 5.8 and relies,
+on the two releases in between, on the header and the delegate signature having
+changed together. The other engine APIs this depends on (`RHIRunOnQueue`,
+realtime overrides, `UEditorPerformanceSettings`, `UMediaCapture::CaptureSourceType`)
+are identical in 5.5 and 5.8.
+
+### 2. Editor and PIE publish under the same name
+
+While PIE runs, the editor-world senders keep publishing, so the PIE ones come
+up as `Name_1`, and a receiver following `Name` keeps showing the editor view.
+Whether editor-world streams should pause during PIE is not decided yet.
+
+### 3. `ReflectSharedProperties` debug-layer note
+
+Once per wrapped resource, the debug layer reports *"Resource provided was not
+shared by D3D11, or with a D3D11 desc."* It comes from the 11On12 runtime probing
+a resource it did not create, does not repeat per frame and has no visible
+effect.
+
+### 4. Not exercised yet
+
+- UMG burn-in (`BurnInWidgetClass`) and captured alpha (`r.PostProcessing.PropagateAlpha`).
+- HDR output: the viewport source assumes an SDR, display-encoded back buffer.
+- Laptops with switchable graphics, and multi-GPU.
+
+A packaged Shipping game of a Blueprint-only project, using the plugin installed
+in the engine by the installer, publishes and cleans up correctly on 5.8. When
+testing one: Shipping ignores a map given on the command line, so the level with
+the Spout actors has to be the project's default map.
 
 ---
 
-## Ranked risk list
+## Installer
 
-The compile-time doubts are settled: `UMediaCapture`, `ID3D12DynamicRHI` and
-`bUseUnity` all built on both engines (no deprecation warning for the latter).
-What is left can only fail at runtime. Ordered by how likely each is to be
-wrong, highest first.
+`Installer\Build-Installer.ps1` → `Installer\out\SpoutUE-Setup-<version>.exe`.
+The exe is a small WinForms program (`SpoutUEInstaller.cs`, C# 5 for the
+compiler in `Windows\Microsoft.NET\Framework64\v4.0.30319`) with one zip per
+engine version embedded as `Payload.<major>.<minor>.zip`. A build only loads in
+the minor version it was compiled for, so versions without a payload are listed
+but cannot be ticked. It installs to `Engine\Plugins\Marketplace\SpoutUE`,
+unpacking next to the destination and swapping folders so a failure leaves the
+previous install intact, and refuses while that engine's editor runs.
 
-### 1. D3D12 resource states around the 11On12 wrapper
+It is manifested `asInvoker` and asks for elevation itself, so `/engineroot`
+runs (the build script's self-test) need no UAC prompt.
 
-The part most likely to compile cleanly and still be wrong.
+Verified on this machine: installed into UE 5.8 from the exe, loaded from
+`Marketplace` by a blank project with no plugin of its own, all streams live in
+the editor, in PIE, and in Development and Shipping packages of that project.
+Reinstalling over an existing install, uninstalling twice and asking for a
+version without a build were checked from the command line.
 
-`CreateWrappedResource` declares the state the D3D12 resource must be in when
-`AcquireWrappedResources` is called, and the state it is left in on release. The
-plugin declares `COPY_SOURCE` for the sender and `COPY_DEST` for the receiver,
-and brackets each acquire with an RHI transition to the matching `ERHIAccess`.
-
-Unreal tracks its own resource states and knows nothing about the 11On12
-transitions, so the two views can drift. **Run with `-d3ddebug` early.** If the
-D3D12 debug layer complains about a barrier with a mismatched before-state, that
-is this. The fix is to adjust the `ERHIAccess` on either side of the acquire in
-`SpoutSenderStream.cpp` / `SpoutReceiverStream.cpp` so it matches the declared
-state exactly.
-
-### 2. Submission order before the acquire
-
-`ImmediateFlush(DispatchToRHIThread)` hands the frame's commands to the RHI
-thread; it does not wait for the RHI thread to submit them to the GPU queue. The
-D3D11On12 copy is issued from the render thread straight onto the same queue, so
-with the RHI thread enabled (the D3D12 default) the copy can, in principle,
-reach the queue before the conversion pass that produced the frame. Symptom: a
-receiver one frame behind, or occasional torn frames. If that shows up, try
-`EImmediateFlushType::FlushRHIThread` in both streams — correct ordering at the
-cost of a render-thread stall — and measure.
-
-### 3. `SpoutUEMedia` (Media Output)
-
-Compiles on both engines; never exercised. **If it fights you at runtime:**
-delete the `SpoutUEMedia` entry from `SpoutUE.uplugin`. Nothing else references
-the module. The sender components cover every use case except nDisplay and
-Movie Render Queue.
-
-### 4. Viewport source on 5.6 / 5.7
-
-The back buffer callback picks its overload by whether
-`Slate/SlateViewportProvider.h` exists. That is right for 5.5 and 5.8; on the two
-untested releases it relies on the header and the delegate signature having
-changed together. A compile error in `SpoutSenderComponent.cpp` there means they
-did not.
-
-### 5. `FWidgetRenderer::DrawWidget` — UMG burn-in
-
-Only reached when `BurnInWidgetClass` is set on a capture component. Low blast
-radius: if it misbehaves, the burn-in is the only casualty.
-
----
+**The 5.5 payload cannot be built here yet:** `BuildPlugin` on 5.5 stops on the
+broken Postshot install described above. Repair or remove Postshot, then run the
+build script again; it picks up every engine it finds.
 
 ## Decisions made on purpose
 
@@ -132,10 +161,32 @@ receivers cannot know how to interpret the bits, and OBS shows nothing at all.
 format instead of the one read off the texture. It is a subclass rather than a
 patch so the vendored sources stay refreshable from upstream.
 
-**A flush of the immediate command list before every acquire.** The conversion pass can still be
-sitting in an open command list when the D3D11 side copies, which shows
-receivers the previous frame. This is not defensive paranoia; remove it and you
-get a one-frame lag that looks like a Spout problem.
+**All 11On12 work runs from `RHIRunOnQueue`.** Recorded from the render thread,
+it reaches the GPU queue before Unreal's own commands for the same frame, which
+are still on the RHI thread. `RunOnGraphicsQueue_RenderThread` dispatches what
+the render thread has recorded, then enqueues a lambda that calls
+`ID3D12DynamicRHI::RHIRunOnQueue`: the callback runs on Unreal's submission
+thread, after everything recorded before it and before anything recorded after.
+This is the pattern Epic's NNE plugin uses. The receiver pays for it with one
+frame of latency on its connection state (not on its pixels), and teardown
+flushes the RHI thread before deleting a `spoutDX`, since a callback may still
+be using it.
+
+**Wrappers are declared in the state Unreal believes the resource is in**, not
+in the state the copy needs. 11On12 transitions around its own work and hands
+the resource back where it found it; Unreal never sees any of it, so its view
+stays right. Moving the resource on the Unreal side first does not work: the
+D3D12 RHI drops transitions on untracked resources, and in practice did on the
+sender surface too.
+
+**Global shaders in a module of their own.** `SpoutUEShaders` has no UObjects so
+it can load at `PostConfigInit`; `SpoutUE` cannot.
+
+**The editor is kept awake while Spout runs in it.** Off World Live asks users to
+untick *Use Less CPU when in Background*; here the editor module does it in
+memory, for as long as an editor-world stream exists, and puts it back after.
+The restore happens on `OnEnginePreExit`, because by the time `ShutdownModule`
+runs on exit the settings object is gone.
 
 **One shared D3D11On12 device.** Every sender and receiver uses the same bridge,
 reached through `GetSpoutDevice()` in `SpoutUE.h`. A second 11On12 device would
@@ -187,20 +238,19 @@ Things that are deliberately missing, not bugs.
 
 ## Things worth checking at runtime, beyond "does it build"
 
+Checked and fine: renaming and resizing a live sender, four to five senders and
+a receiver in one process, PIE start/stop cycles, a clean quit. Still to check:
+
 - `r.PostProcessing.PropagateAlpha` changed meaning around 5.5 (it used to have
   a mode 2; it is effectively a bool now). The capture component reads it with
   `GetInt()` and only warns, so a change in semantics degrades to a spurious
   warning rather than a failure — but verify the alpha actually comes through.
-- Sender **rename** tears down and recreates the sender, because Spout
-  identifies senders by name. Confirm receivers re-latch rather than hanging.
-- **Multiple senders in one process** share the bridge but hold separate
-  `spoutDX` instances. Worth running three or four at once early.
-- **PIE start/stop cycles** are where the render-thread teardown
-  (`FlushRenderingCommands` in `DestroyStream` / `UnbindViewportSource`) earns
-  its keep. If anything is going to crash, it is here.
 - **Laptops with switchable graphics.** Spout cannot share across adapters;
   Unreal and the receiving application must both be on the discrete GPU. A
   "sender exists but shows black" report is almost always this.
+- **Run the D3D12 debug layer after touching the streams.** `-d3ddebug` on the
+  command line; anything other than the `ReflectSharedProperties` note means the
+  wrapper states and Unreal's view have drifted apart again.
 
 ## Vendored SDK
 
