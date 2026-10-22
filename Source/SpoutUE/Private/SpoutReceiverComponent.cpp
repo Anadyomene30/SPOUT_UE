@@ -34,8 +34,10 @@ namespace
 		case PF_A32B32G32R32F:
 			return RTF_RGBA32f;
 
+		// No 11:11:10 render target format exists, so the nearest float format
+		// that loses nothing takes its place.
 		case PF_FloatR11G11B10:
-			return RTF_RG11B10F;
+			return RTF_RGBA16f;
 
 		default:
 			return RTF_RGBA8;

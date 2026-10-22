@@ -5,7 +5,6 @@
 #include "DetailCategoryBuilder.h"
 #include "DetailLayoutBuilder.h"
 #include "DetailWidgetRow.h"
-#include "IDetailPropertyRow.h"
 #include "PropertyHandle.h"
 #include "SpoutReceiverComponent.h"
 #include "SpoutSenderComponent.h"
@@ -39,7 +38,7 @@ void FSpoutReceiverComponentDetails::CustomizeDetails(IDetailLayoutBuilder& Deta
 
 	RefreshOptions();
 
-	IDetailCategoryBuilder& Category = DetailBuilder.EditCategory(TEXT("Spout|Receiver"));
+	IDetailCategoryBuilder& Category = DetailBuilder.EditCategory(TEXT("Spout"));
 
 	DetailBuilder.HideProperty(SenderNameHandle);
 
@@ -142,7 +141,7 @@ void FSpoutSenderComponentDetails::CustomizeDetails(IDetailLayoutBuilder& Detail
 {
 	DetailBuilder.GetObjectsBeingCustomized(CustomizedObjects);
 
-	IDetailCategoryBuilder& Category = DetailBuilder.EditCategory(TEXT("Spout|Sender"));
+	IDetailCategoryBuilder& Category = DetailBuilder.EditCategory(TEXT("Spout"));
 
 	Category.AddCustomRow(LOCTEXT("SenderStatusFilter", "Status"))
 		.NameContent()

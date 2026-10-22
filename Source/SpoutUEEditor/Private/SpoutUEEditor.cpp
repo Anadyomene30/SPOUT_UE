@@ -2,32 +2,32 @@
 
 #include "SpoutUEEditor.h"
 
-#include "IPlacementModeModule.h"
 #include "Modules/ModuleManager.h"
 #include "PropertyEditorModule.h"
-#include "SpoutCineCameraActor.h"
-#include "SpoutManagerActors.h"
 #include "SpoutReceiverComponent.h"
 #include "SpoutSenderComponent.h"
 #include "SpoutSenderPickerCustomization.h"
-#include "Styling/SlateIconFinder.h"
 
 #define LOCTEXT_NAMESPACE "FSpoutUEEditorModule"
 
-namespace
-{
-	const FName SpoutPlacementCategoryHandle = TEXT("Spout");
-}
+//
+// There is deliberately no Place Actors category registration here.
+//
+// FPlaceableItem's constructors are the kind of editor API that shifts between
+// engine releases, and a compile error in this module takes the whole editor
+// build down with it. The three actors are placeable UCLASSes, so the Place
+// Actors panel already lists them under All Classes and finds them by typing
+// "Spout" — a category would be presentation, bought at the price of a build
+// risk on every engine upgrade.
+//
 
 void FSpoutUEEditorModule::StartupModule()
 {
 	RegisterDetailCustomizations();
-	RegisterPlacementCategory();
 }
 
 void FSpoutUEEditorModule::ShutdownModule()
 {
-	UnregisterPlacementCategory();
 	UnregisterDetailCustomizations();
 }
 
@@ -50,6 +50,8 @@ void FSpoutUEEditorModule::RegisterDetailCustomizations()
 
 void FSpoutUEEditorModule::UnregisterDetailCustomizations()
 {
+	// On editor shutdown the property module may already be gone, and asking for
+	// it would load it again just to unregister from it.
 	if (!FModuleManager::Get().IsModuleLoaded(TEXT("PropertyEditor")))
 	{
 		CustomizedClasses.Reset();
@@ -65,50 +67,6 @@ void FSpoutUEEditorModule::UnregisterDetailCustomizations()
 
 	CustomizedClasses.Reset();
 	PropertyModule.NotifyCustomizationModuleChanged();
-}
-
-void FSpoutUEEditorModule::RegisterPlacementCategory()
-{
-	if (!IPlacementModeModule::IsAvailable())
-	{
-		return;
-	}
-
-	IPlacementModeModule& PlacementModule = IPlacementModeModule::Get();
-
-	// Sort order 45 puts Spout just after the engine's own categories rather than
-	// at the very bottom of a long list.
-	const FPlacementCategoryInfo CategoryInfo(
-		LOCTEXT("SpoutPlacementCategory", "Spout"),
-		FSlateIconFinder::FindIconForClass(ASpoutSenderActor::StaticClass()),
-		SpoutPlacementCategoryHandle,
-		TEXT("PMSpout"),
-		45);
-
-	if (!PlacementModule.RegisterPlacementCategory(CategoryInfo))
-	{
-		return;
-	}
-
-	bPlacementCategoryRegistered = true;
-
-	PlacementModule.RegisterPlaceableItem(SpoutPlacementCategoryHandle,
-		MakeShared<FPlaceableItem>(*ASpoutSenderActor::StaticClass()));
-	PlacementModule.RegisterPlaceableItem(SpoutPlacementCategoryHandle,
-		MakeShared<FPlaceableItem>(*ASpoutReceiverActor::StaticClass()));
-	PlacementModule.RegisterPlaceableItem(SpoutPlacementCategoryHandle,
-		MakeShared<FPlaceableItem>(*ASpoutCineCameraActor::StaticClass()));
-}
-
-void FSpoutUEEditorModule::UnregisterPlacementCategory()
-{
-	if (!bPlacementCategoryRegistered || !IPlacementModeModule::IsAvailable())
-	{
-		return;
-	}
-
-	IPlacementModeModule::Get().UnregisterPlacementCategory(SpoutPlacementCategoryHandle);
-	bPlacementCategoryRegistered = false;
 }
 
 #undef LOCTEXT_NAMESPACE

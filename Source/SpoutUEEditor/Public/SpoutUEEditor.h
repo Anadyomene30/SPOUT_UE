@@ -6,8 +6,8 @@
 #include "Modules/ModuleInterface.h"
 
 /**
- * Editor-only conveniences: a sender picker instead of a bare text field, live
- * status on sender components, and a Spout category in the Place Actors panel.
+ * Editor-only conveniences: a picker instead of a bare sender-name text field,
+ * and live status on sender components.
  */
 class FSpoutUEEditorModule : public IModuleInterface
 {
@@ -20,9 +20,5 @@ private:
 	void RegisterDetailCustomizations();
 	void UnregisterDetailCustomizations();
 
-	void RegisterPlacementCategory();
-	void UnregisterPlacementCategory();
-
 	TArray<FName> CustomizedClasses;
-	bool bPlacementCategoryRegistered = false;
 };

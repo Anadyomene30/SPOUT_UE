@@ -19,7 +19,6 @@ public class SpoutUEEditor : ModuleRules
 		PrivateDependencyModuleNames.AddRange(new string[]
 		{
 			"InputCore",
-			"PlacementMode",
 			"PropertyEditor",
 			"Projects",
 			"Slate",

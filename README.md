@@ -9,7 +9,7 @@ Spout streams back into render targets and materials. Nothing is compressed,
 nothing is read back to the CPU, and nothing leaves the GPU.
 
 > **Status:** the plugin is complete but has not yet been compiled against a real
-> UE 5.8 installation — see [Before your first build](#before-your-first-build).
+> engine installation — see [Before your first build](#before-your-first-build).
 
 ---
 
@@ -17,7 +17,7 @@ nothing is read back to the CPU, and nothing leaves the GPU.
 
 | | |
 |---|---|
-| Engine | Unreal Engine 5.8 |
+| Engine | Unreal Engine **5.5 → 5.8** |
 | Platform | Windows 64-bit |
 | RHI | **DirectX 12** (the Unreal default on Windows) |
 | GPU | A single GPU. Spout cannot share between two adapters. |
@@ -25,6 +25,28 @@ nothing is read back to the CPU, and nothing leaves the GPU.
 The plugin refuses to start and logs why if the project is running on D3D11,
 Vulkan or a null RHI. `Is Spout Supported` and `Get Spout Unavailable Reason`
 expose the same check to Blueprint.
+
+The `.uplugin` carries no `EngineVersion`, so the engine will not refuse to load
+it or offer to rebuild it for a different version. The floor is enforced in code
+instead: on 5.4 or older the build stops with one readable `#error` rather than a
+few hundred errors from whichever API moved.
+
+### Why 5.5 is the floor
+
+Two engine APIs the plugin depends on landed just below it, so supporting older
+versions would mean carrying a second code path for each:
+
+- `FRHICommandListBase::CreateTexture` (5.3) — how every intermediate and
+  staging texture is allocated.
+- `UMediaCapture::InitializeCapture` (5.2) — replaced the older
+  `CaptureSceneViewportImpl` / `ValidateMediaOutput` entry points.
+
+Everything else in the plugin is older than 5.0. The one override whose
+signature genuinely moved inside the supported range,
+`UMediaCapture::OnRHIResourceCaptured_RenderingThread` (gained an
+`FRHICommandListImmediate&` in 5.3), is already guarded with
+`UE_VERSION_OLDER_THAN`, so that file would also build on 5.2 if the floor were
+ever lowered.
 
 ## Installing
 
@@ -228,27 +250,31 @@ to `SpoutUE.log` and says precisely which mutex or handle failed.
 
 ## Before your first build
 
-This plugin was written against the UE 5.8 API but has not been compiled yet.
-Nothing here is speculative design — the sharing path follows the Spout SDK's own
-D3D12 sample — but a few call sites are the kind that move between engine
-versions. If the build complains, look at these first:
+The plugin has not been compiled against a real engine installation yet. Nothing
+here is speculative design — the sharing path follows the Spout SDK's own D3D12
+sample — but a few call sites are the kind that move between engine versions. If
+the build complains, look at these first:
 
 1. **`ID3D12DynamicRHI`** (`Source/SpoutUE/Private/D3D12/SpoutD3D12Device.cpp`) —
    `RHIGetDevice`, `RHIGetCommandQueue` and `RHIGetResource` have been stable
    since 5.0, but they are the tightest coupling to the engine here.
-2. **`UMediaCapture::OnRHIResourceCaptured_RenderingThread`**
-   (`Source/SpoutUEMedia`) — this one genuinely changed signature in 5.3 and is
-   already guarded with `UE_VERSION_OLDER_THAN`. If 5.8 moved it again, that is
-   the place. The whole `SpoutUEMedia` module can be removed from
-   `SpoutUE.uplugin` without affecting anything else.
-3. **`FPlacementCategoryInfo`** (`Source/SpoutUEEditor`) — the Place Actors
-   category constructor gained a `FSlateIcon` parameter in 5.1. Cosmetic: drop
-   `RegisterPlacementCategory` if it disagrees, the actors are still findable by
-   searching "Spout".
-4. **`FWidgetRenderer::DrawWidget`** (`SpoutCaptureComponent.cpp`) — only used by
+2. **`UMediaCapture`** (`Source/SpoutUEMedia`) — the override signature changed
+   once already, in 5.3, and is guarded. If it moved again, that is the place.
+   The whole `SpoutUEMedia` module can be deleted from `SpoutUE.uplugin` without
+   affecting anything else.
+3. **`FWidgetRenderer::DrawWidget`** (`SpoutCaptureComponent.cpp`) — only used by
    the UMG burn-in.
+4. **`ModuleRules.bUseUnity`** (`SpoutSDK.Build.cs`) — deprecated in recent UBT
+   versions. If it warns, that is expected; if it errors, drop the line and the
+   vendored SDK will simply build inside unity blobs.
 
 Everything else is ordinary UObject, RHI and RDG code.
+
+The Place Actors panel has no custom Spout category on purpose: the three actors
+are placeable UCLASSes, so they already appear under All Classes and come up by
+typing "Spout". A category would have meant depending on `FPlaceableItem`, whose
+constructors shift between releases, and a compile error in the editor module
+takes the whole editor build with it.
 
 ## Credits and licences
 

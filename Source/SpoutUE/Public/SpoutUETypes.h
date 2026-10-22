@@ -3,8 +3,19 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Misc/EngineVersionComparison.h"
 #include "PixelFormat.h"
 #include "SpoutUETypes.generated.h"
+
+// Included by every public header in the plugin, so this is where an
+// unsupported engine is caught with one clear message rather than a few hundred
+// errors from whichever API moved. 5.5 is the floor because the plugin creates
+// its textures through FRHICommandListBase::CreateTexture, which arrived in 5.3,
+// and because UMediaCapture::InitializeCapture replaced the older capture
+// entry points in 5.2.
+#if UE_VERSION_OLDER_THAN(5, 5, 0)
+	#error "SpoutUE supports Unreal Engine 5.5 and later. On an older engine, see the compatibility notes in README.md."
+#endif
 
 /** When a sender or receiver should bring itself up without being told to. */
 UENUM(BlueprintType)
