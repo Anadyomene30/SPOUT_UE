@@ -31,6 +31,18 @@ namespace
 	bool GSpoutDeviceCreationFailed = false;
 
 	int32 GEditorStreamCount = 0;
+	bool GEditorSendersPaused = false;
+}
+
+void FSpoutUEModule::SetEditorSendersPaused(bool bPaused)
+{
+	check(IsInGameThread());
+	GEditorSendersPaused = bPaused;
+}
+
+bool FSpoutUEModule::AreEditorSendersPaused()
+{
+	return GEditorSendersPaused;
 }
 
 void FSpoutUEModule::NotifyEditorStreamStarted()

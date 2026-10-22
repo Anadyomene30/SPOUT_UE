@@ -96,6 +96,13 @@ bool USpoutSenderComponent::ShouldAutoStart() const
 		return false;
 	}
 
+	// While PIE runs, its copy of this actor publishes under this name.
+	const UWorld* OwnerWorld = GetWorld();
+	if (OwnerWorld && !OwnerWorld->IsGameWorld() && FSpoutUEModule::AreEditorSendersPaused())
+	{
+		return false;
+	}
+
 	switch (StartupPolicy)
 	{
 	case ESpoutStartupPolicy::EditorAndGame:

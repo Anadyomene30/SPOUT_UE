@@ -12,6 +12,7 @@
 #include "SpoutSenderComponent.h"
 #include "SpoutSenderPickerCustomization.h"
 #include "SpoutUE.h"
+#include "UObject/UObjectIterator.h"
 
 #define LOCTEXT_NAMESPACE "FSpoutUEEditorModule"
 
@@ -44,10 +45,15 @@ void FSpoutUEEditorModule::StartupModule()
 	// Undone while GEditor and the settings objects still exist; by the time
 	// ShutdownModule runs on exit, the UObject system is already gone.
 	FCoreDelegates::OnEnginePreExit.AddRaw(this, &FSpoutUEEditorModule::UnregisterKeepAwake);
+
+	FEditorDelegates::PreBeginPIE.AddRaw(this, &FSpoutUEEditorModule::OnPreBeginPIE);
+	FEditorDelegates::EndPIE.AddRaw(this, &FSpoutUEEditorModule::OnEndPIE);
 }
 
 void FSpoutUEEditorModule::ShutdownModule()
 {
+	FEditorDelegates::PreBeginPIE.RemoveAll(this);
+	FEditorDelegates::EndPIE.RemoveAll(this);
 	FCoreDelegates::OnEnginePreExit.RemoveAll(this);
 
 	// Only reached with live UObjects when the module is unloaded on its own.
@@ -57,6 +63,39 @@ void FSpoutUEEditorModule::ShutdownModule()
 	}
 
 	UnregisterDetailCustomizations();
+}
+
+void FSpoutUEEditorModule::OnPreBeginPIE(bool bIsSimulating)
+{
+	// Released here, before the PIE world exists, so the PIE copies of these
+	// senders find their names free and publish under them instead of Name_1.
+	FSpoutUEModule::SetEditorSendersPaused(true);
+
+	for (TObjectIterator<USpoutSenderComponent> It; It; ++It)
+	{
+		USpoutSenderComponent* Sender = *It;
+		const UWorld* World = Sender->GetWorld();
+		if (World && !World->IsGameWorld() && Sender->IsSendingRequested())
+		{
+			Sender->StopSending();
+			PausedSenders.Add(Sender);
+		}
+	}
+}
+
+void FSpoutUEEditorModule::OnEndPIE(bool bIsSimulating)
+{
+	FSpoutUEModule::SetEditorSendersPaused(false);
+
+	// Only the senders paused above: one stopped on purpose stays stopped.
+	for (const TWeakObjectPtr<USpoutSenderComponent>& Sender : PausedSenders)
+	{
+		if (Sender.IsValid())
+		{
+			Sender->StartSending();
+		}
+	}
+	PausedSenders.Reset();
 }
 
 void FSpoutUEEditorModule::RegisterKeepAwake()

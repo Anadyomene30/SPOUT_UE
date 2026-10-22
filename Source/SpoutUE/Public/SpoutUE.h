@@ -45,6 +45,15 @@ public:
 	static void NotifyEditorStreamStarted();
 	static void NotifyEditorStreamStopped();
 	static int32 GetEditorStreamCount();
+
+	/**
+	 * Set by the editor module while PIE runs. Editor-world senders stand down so
+	 * that the PIE copies of the same actors publish under the original names,
+	 * and receivers following those names switch to the game without a change on
+	 * their side. Game thread only.
+	 */
+	static void SetEditorSendersPaused(bool bPaused);
+	static bool AreEditorSendersPaused();
 };
 
 /**

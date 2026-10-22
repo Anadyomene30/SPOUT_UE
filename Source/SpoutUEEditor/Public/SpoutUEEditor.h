@@ -33,7 +33,13 @@ private:
 	void SetRealtimeOverride(bool bEnabled);
 	void SetBackgroundThrottleSuspended(bool bSuspended);
 
+	/** Editor-world senders stand down for the length of a PIE session. */
+	void OnPreBeginPIE(bool bIsSimulating);
+	void OnEndPIE(bool bIsSimulating);
+
 	TArray<FName> CustomizedClasses;
+
+	TArray<TWeakObjectPtr<class USpoutSenderComponent>> PausedSenders;
 
 	FTSTicker::FDelegateHandle KeepAwakeTickerHandle;
 	FDelegateHandle ThrottleDelegateHandle;

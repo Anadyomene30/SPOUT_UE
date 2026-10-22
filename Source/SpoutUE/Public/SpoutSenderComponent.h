@@ -110,6 +110,9 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Spout|Sender")
 	bool IsSending() const;
 
+	/** True from StartSending to StopSending, whether or not a frame has been published yet. */
+	bool IsSendingRequested() const { return bIsSending; }
+
 	/** Renaming a live sender restarts it, since Spout identifies senders by name. */
 	UFUNCTION(BlueprintCallable, Category = "Spout|Sender")
 	void SetSenderName(const FString& NewName);
