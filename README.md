@@ -64,7 +64,8 @@ builds carry everything they need.
 
 ### Send a render target
 
-1. Place a **Spout Sender Manager** in the level (Place Actors → Spout).
+1. Place a **Spout Sender Manager** in the level (type "Spout" in the Place
+   Actors search box).
 2. Assign a Render Target to **Source Render Target**.
 3. Leave **Startup Policy** on *Game only*, or set it to *Editor and game* to
    see the feed while you work in the viewport.
