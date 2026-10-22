@@ -61,6 +61,21 @@ specific doubts:
   three older virtuals, so an engine that reintroduces them would silently never
   call ours.
 
+**Checked against Epic's public API docs (search results only; the docs site
+itself was unreachable from the container):**
+
+- `SetMediaOutput` exists and is public: it is Blueprint-callable, and can
+  only be called while the capture is stopped.
+- `OnRHIResourceCaptured_RenderingThread` does take `FRHICommandListImmediate&`
+  first in the current docs, and `InitializeCapture` is what the AJA,
+  Blackmagic and NDI captures override. Both match the code.
+- **`GetMediaOutput()` on `UMediaCapture` was not found anywhere.** The only
+  `GetMediaOutput()` documented belongs to `UProxyMediaOutput`. This is the most
+  likely compile error in the module. Fix: in `SpoutMediaCapture.cpp`, read the
+  base class's protected `MediaOutput` member instead
+  (`Cast<USpoutMediaOutput>(MediaOutput)`). That member is from memory, not
+  verified — check `MediaCapture.h` in the engine tree.
+
 **If it fights you:** delete the `SpoutUEMedia` entry from `SpoutUE.uplugin`.
 Nothing else references the module. The sender components cover every use case
 except nDisplay and Movie Render Queue.
@@ -72,6 +87,12 @@ Stable since 5.0 as far as I know, and it is the public interface rather than
 D3D12RHI internals, but it is the tightest coupling to the engine in the whole
 plugin. If this breaks there is no fallback — the plugin cannot work without
 reaching Unreal's device and queue.
+
+**Checked against Epic's public API docs:** `RHIGetDevice(uint32)` returns
+`ID3D12Device*`, `RHIGetCommandQueue()` returns `ID3D12CommandQueue*`, and
+`RHIGetResource` has an `FRHITexture*` overload returning `ID3D12Resource*`, all
+declared in `ID3D12DynamicRHI.h`. All three match the code. This risk drops
+well below the state-tracking one.
 
 ### 3. D3D12 resource states around the 11On12 wrapper
 
