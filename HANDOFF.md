@@ -100,20 +100,14 @@ changed together. The other engine APIs this depends on (`RHIRunOnQueue`,
 realtime overrides, `UEditorPerformanceSettings`, `UMediaCapture::CaptureSourceType`)
 are identical in 5.5 and 5.8.
 
-### 2. Editor and PIE publish under the same name
-
-While PIE runs, the editor-world senders keep publishing, so the PIE ones come
-up as `Name_1`, and a receiver following `Name` keeps showing the editor view.
-Whether editor-world streams should pause during PIE is not decided yet.
-
-### 3. `ReflectSharedProperties` debug-layer note
+### 2. `ReflectSharedProperties` debug-layer note
 
 Once per wrapped resource, the debug layer reports *"Resource provided was not
 shared by D3D11, or with a D3D11 desc."* It comes from the 11On12 runtime probing
 a resource it did not create, does not repeat per frame and has no visible
 effect.
 
-### 4. Not exercised yet
+### 3. Not exercised yet
 
 - UMG burn-in (`BurnInWidgetClass`) and captured alpha (`r.PostProcessing.PropagateAlpha`).
 - HDR output: the viewport source assumes an SDR, display-encoded back buffer.
@@ -179,6 +173,19 @@ the resource back where it found it; Unreal never sees any of it, so its view
 stays right. Moving the resource on the Unreal side first does not work: the
 D3D12 RHI drops transitions on untracked resources, and in practice did on the
 sender surface too.
+
+**Editor-world senders stand down during PIE.** On `PreBeginPIE`, before the
+PIE world exists, the editor module stops the editor-world senders and holds
+their auto-start off; on `EndPIE` it restarts the same ones. The PIE copies then
+publish under the original names, so a receiver following `Name` switches to
+the game with no change on its side, instead of seeing `Name_1` appear.
+Receivers are left running: two receivers on one sender do no harm.
+
+**For a show, send the game viewport.** Checked on the VIBH2O main map (5.8,
+`-game`): the viewport source matches the screen within 1/255 and Resolume's
+output matches the source, and it follows whatever camera the player is viewing
+through, Level Blueprint `SetViewTargetWithBlend` and Sequencer fades included.
+A Spout Cine Camera only ever shows its own camera.
 
 **Global shaders in a module of their own.** `SpoutUEShaders` has no UObjects so
 it can load at `PostConfigInit`; `SpoutUE` cannot.

@@ -303,9 +303,10 @@ Spout's own SpoutSettings utility.
 **The feed is one frame behind.** Cap `Max Frame Rate` on the sender to the rate
 the receiver actually consumes; publishing faster than that gains nothing.
 
-**During PIE a sender shows up as `Name_1`.** The editor-world copy of the same
-actor is still publishing as `Name` (*Editor and game* policy). Use *Game only*
-on actors meant for play, or follow `Name_1` in the receiving application.
+**The feed switches when PIE starts and stops.** That is on purpose: while PIE
+runs, senders in the editor world stand down and their PIE copies publish under
+the same names, so Resolume follows the game; the editor copies come back when
+PIE ends.
 
 **The receiver keeps reconnecting.** `Get Stats → Reconnect Count` climbing means
 the sender is restarting — usually another Unreal instance fighting for the same
