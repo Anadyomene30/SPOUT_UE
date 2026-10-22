@@ -6,6 +6,7 @@
 
 #include "SpoutUE.h"
 #include "RHI.h"
+#include "RHICommandList.h"
 #include "RHIResources.h"
 #include "ID3D12DynamicRHI.h"
 
@@ -149,6 +150,26 @@ void FSpoutD3D12Device::FlushD3D11() const
 	{
 		D3D11Context->Flush();
 	}
+}
+
+void FSpoutD3D12Device::RunOnGraphicsQueue_RenderThread(FRHICommandListImmediate& RHICmdList, TFunction<void()>&& Work)
+{
+	check(IsInRenderingThread());
+
+	// Closes the batch holding everything recorded so far. The RHI thread submits
+	// that batch before it reaches the lambda below, so the payload RHIRunOnQueue
+	// queues lands behind it. This is the pattern Epic's own D3D12 interop uses.
+	RHICmdList.ImmediateFlush(EImmediateFlushType::DispatchToRHIThread);
+
+	RHICmdList.EnqueueLambda(TEXT("Spout.RunOnGraphicsQueue"), [Work = MoveTemp(Work)](auto&) mutable
+	{
+		// Waiting for submission keeps the RHI thread from translating later
+		// commands, which may read what Work writes, until Work has been queued.
+		GetID3D12DynamicRHI()->RHIRunOnQueue(
+			ED3D12RHIRunOnQueueType::Graphics,
+			[Work = MoveTemp(Work)](ID3D12CommandQueue*) { Work(); },
+			true);
+	});
 }
 
 ID3D12Resource* FSpoutD3D12Device::GetNativeResource(FRHITexture* Texture)

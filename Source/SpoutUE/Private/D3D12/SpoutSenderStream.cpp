@@ -80,14 +80,9 @@ bool FSpoutSenderStream::Send_RenderThread(FRHICommandListImmediate& RHICmdList,
 		return false;
 	}
 
-	SpoutUE::ConvertTexture_RenderThread(RHICmdList, SourceTexture, SharedTexture.GetReference(), Params.Conversion);
-
-	// The D3D11On12 copy runs on Unreal's own graphics queue, so it is ordered
-	// against Unreal's work once that work has actually been submitted. Without
-	// this flush the conversion pass above may still be sitting in an open command
-	// list while the D3D11 side copies, and receivers see the previous frame.
-	RHICmdList.Transition(FRHITransitionInfo(SharedTexture.GetReference(), ERHIAccess::Unknown, ERHIAccess::CopySrc));
-	RHICmdList.ImmediateFlush(EImmediateFlushType::DispatchToRHIThread);
+	// Always ends on a raster write, so the surface is a render target as far as
+	// Unreal is concerned, which is the state the wrapper is declared with.
+	SpoutUE::ConvertTexture_RenderThread(RHICmdList, SourceTexture, SharedTexture.GetReference(), Params.Conversion, ERHIAccess::RTV);
 
 	if (!EnsureWrappedResource_RenderThread())
 	{
@@ -101,11 +96,24 @@ bool FSpoutSenderStream::Send_RenderThread(FRHICommandListImmediate& RHICmdList,
 		Sender->SetSenderName(TCHAR_TO_UTF8(*CurrentName));
 	}
 
-	Device->AcquireWrapped(WrappedResource.GetReference());
-	const bool bSent = Sender->SendTextureAs(WrappedTexture.GetReference(), PublishFormat);
-	Device->ReleaseWrapped(WrappedResource.GetReference());
-	Device->FlushD3D11();
+	// The references keep the surface alive if the stream resizes before this
+	// runs; Sender is only deleted after an RHI thread flush.
+	FSpoutD3D12Device::RunOnGraphicsQueue_RenderThread(RHICmdList,
+		[this, Device, Surface = SharedTexture, Wrapped = WrappedResource, WrappedView = WrappedTexture, PublishFormat]()
+		{
+			Device->AcquireWrapped(Wrapped.GetReference());
+			const bool bSent = Sender->SendTextureAs(WrappedView.GetReference(), PublishFormat);
+			Device->ReleaseWrapped(Wrapped.GetReference());
+			Device->FlushD3D11();
 
+			NoteSendResult(bSent);
+		});
+
+	return true;
+}
+
+void FSpoutSenderStream::NoteSendResult(bool bSent)
+{
 	{
 		FScopeLock Lock(&StateSection);
 		if (bSent)
@@ -127,8 +135,6 @@ bool FSpoutSenderStream::Send_RenderThread(FRHICommandListImmediate& RHICmdList,
 	{
 		NoteFrameSent();
 	}
-
-	return bSent;
 }
 
 bool FSpoutSenderStream::EnsureSharedTexture_RenderThread(FRHICommandListImmediate& RHICmdList, FIntPoint Extent, EPixelFormat Format)
@@ -193,9 +199,12 @@ bool FSpoutSenderStream::EnsureWrappedResource_RenderThread()
 	WrappedTexture.SafeRelease();
 	WrappedResource.SafeRelease();
 
-	// The RHI transition above leaves the resource in COPY_SOURCE, and Spout only
-	// ever reads from it, so it goes back into the same state on release.
-	if (!Device->WrapResource(Native, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_COPY_SOURCE, WrappedResource))
+	// Unreal believes the surface stays a render target between conversions, so
+	// that is what 11On12 finds it in and hands it back in; 11On12 issues the
+	// barriers around its own copy. Transitioning it on the Unreal side instead
+	// does not work: the D3D12 RHI drops that transition (verified on 5.5 with
+	// the debug layer), and the copy then reads a resource still in RENDER_TARGET.
+	if (!Device->WrapResource(Native, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_RENDER_TARGET, WrappedResource))
 	{
 		FScopeLock Lock(&StateSection);
 		Stats.LastError = TEXT("D3D11On12 could not wrap the sender's texture.");
@@ -220,6 +229,9 @@ void FSpoutSenderStream::Release_RenderThread()
 
 	if (Sender)
 	{
+		// Frames already handed to the graphics queue still use the sender.
+		FRHICommandListImmediate::Get().ImmediateFlush(EImmediateFlushType::FlushRHIThread);
+
 		Sender->ReleaseSender();
 		Sender->CloseDirectX11();
 		delete Sender;

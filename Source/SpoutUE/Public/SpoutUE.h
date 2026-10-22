@@ -12,8 +12,7 @@ class FSpoutD3D12Device;
 /**
  * Runtime module for the Spout plugin.
  *
- * Registers the plugin's shader source directory and owns the lifetime of the
- * shared D3D11On12 bridge, which is reached through GetSpoutDevice below.
+ * Owns the lifetime of the shared D3D11On12 bridge, which is reached through GetSpoutDevice below.
  */
 class SPOUTUE_API FSpoutUEModule : public IModuleInterface
 {
@@ -34,6 +33,18 @@ public:
 
 	/** True when the running RHI can host Spout sharing (Windows + D3D12). */
 	static bool IsRHISupported();
+
+	/**
+	 * Senders and receivers running in an editor world, as opposed to PIE or a game.
+	 *
+	 * The editor only ticks its world while a viewport is realtime and throttles
+	 * itself when it is not the foreground application, and either one freezes
+	 * editor-world output while the user is working in Resolume or OBS. The editor
+	 * module keeps the editor awake for as long as this is non-zero. Game thread only.
+	 */
+	static void NotifyEditorStreamStarted();
+	static void NotifyEditorStreamStopped();
+	static int32 GetEditorStreamCount();
 };
 
 /**

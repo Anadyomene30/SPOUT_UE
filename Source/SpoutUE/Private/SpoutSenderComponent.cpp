@@ -9,9 +9,11 @@
 #include "Framework/Application/SlateApplication.h"
 #include "RHICommandList.h"
 #include "RenderingThread.h"
+#include "Slate/SceneViewport.h"
 #include "SpoutSettings.h"
 #include "SpoutUE.h"
 #include "TextureResource.h"
+#include "Widgets/SViewport.h"
 #include "Widgets/SWindow.h"
 
 // Slate's present callback stopped passing the back buffer directly and started
@@ -88,6 +90,12 @@ void USpoutSenderComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 
 bool USpoutSenderComponent::ShouldAutoStart() const
 {
+	// Cooking, packaging and other commandlets load levels too, without an RHI.
+	if (IsRunningCommandlet())
+	{
+		return false;
+	}
+
 	switch (StartupPolicy)
 	{
 	case ESpoutStartupPolicy::EditorAndGame:
@@ -129,6 +137,14 @@ void USpoutSenderComponent::StartSending()
 	LastSendTimeSeconds = 0.0;
 	LastPublishedName.Reset();
 
+	// Editor-world output only flows while the editor keeps ticking its world.
+	const UWorld* World = GetWorld();
+	if (World && !World->IsGameWorld())
+	{
+		FSpoutUEModule::NotifyEditorStreamStarted();
+		bCountedAsEditorStream = true;
+	}
+
 	if (SourceMode == ESpoutSourceMode::Viewport)
 	{
 		BindViewportSource();
@@ -149,6 +165,12 @@ void USpoutSenderComponent::StopSending()
 	UnbindViewportSource();
 	DestroyStream();
 	LastPublishedName.Reset();
+
+	if (bCountedAsEditorStream)
+	{
+		FSpoutUEModule::NotifyEditorStreamStopped();
+		bCountedAsEditorStream = false;
+	}
 
 	if (bWasPublished)
 	{
@@ -181,7 +203,7 @@ void USpoutSenderComponent::DestroyStream()
 #endif
 }
 
-void USpoutSenderComponent::BindViewportSource()
+void USpoutSenderComponent::BindViewportSource(bool bLogFailures)
 {
 #if PLATFORM_WINDOWS
 	if (BackBufferReadyHandle.IsValid())
@@ -191,22 +213,24 @@ void USpoutSenderComponent::BindViewportSource()
 
 	if (!FSlateApplication::IsInitialized() || !FSlateApplication::Get().GetRenderer())
 	{
-		UE_LOG(LogSpout, Error, TEXT("Sender '%s' cannot use the viewport source: Slate is not available (running headless?)."), *SenderName);
+		UE_CLOG(bLogFailures, LogSpout, Error, TEXT("Sender '%s' cannot use the viewport source: Slate is not available (running headless?)."), *SenderName);
 		return;
 	}
 
 	if (!GEngine || !GEngine->GameViewport)
 	{
-		UE_LOG(LogSpout, Warning,
+		UE_CLOG(bLogFailures, LogSpout, Warning,
 			TEXT("Sender '%s' is set to the viewport source but there is no game viewport. This mode works in PIE and packaged builds; use a render target to output from the editor viewport."),
 			*SenderName);
 		return;
 	}
 
+	// In a packaged or -game build the window can arrive a few frames after
+	// BeginPlay; the tick keeps trying until it does.
 	GameViewportWindow = GEngine->GameViewport->GetWindow();
 	if (!GameViewportWindow.IsValid())
 	{
-		UE_LOG(LogSpout, Warning, TEXT("Sender '%s': the game viewport has no window yet, so the viewport source will stay idle."), *SenderName);
+		UE_CLOG(bLogFailures, LogSpout, Verbose, TEXT("Sender '%s': the game viewport has no window yet, retrying."), *SenderName);
 		return;
 	}
 
@@ -262,6 +286,7 @@ void USpoutSenderComponent::OnBackBufferReady_RenderThread(SWindow& Window, FRHI
 	}
 
 	FSpoutSenderSettings Settings;
+	FIntRect SourceRect;
 	{
 		FScopeLock Lock(&ViewportSettingsSection);
 		Settings.SenderName = ViewportSenderName;
@@ -269,6 +294,7 @@ void USpoutSenderComponent::OnBackBufferReady_RenderThread(SWindow& Window, FRHI
 		Settings.ColorSpace = ViewportColorSpace;
 		Settings.AlphaMode = ViewportAlphaMode;
 		Settings.bFlipVertical = bViewportFlipVertical;
+		SourceRect = ViewportSourceRect;
 	}
 
 	if (Settings.SenderName.IsEmpty())
@@ -276,20 +302,37 @@ void USpoutSenderComponent::OnBackBufferReady_RenderThread(SWindow& Window, FRHI
 		return;
 	}
 
+	// The presented frame is already encoded for the display, which is exactly
+	// what "match viewport" asks for; encoding it again washes it out.
+	if (Settings.ColorSpace == ESpoutColorSpace::MatchViewport)
+	{
+		Settings.ColorSpace = ESpoutColorSpace::Raw;
+	}
+
 	FRHICommandListImmediate& RHICmdList = FRHICommandListExecutor::GetImmediateCommandList();
 
-	const FIntPoint BackBufferExtent(BackBuffer->GetSizeX(), BackBuffer->GetSizeY());
+	const FIntRect FullRect(FIntPoint::ZeroValue, FIntPoint(BackBuffer->GetSizeX(), BackBuffer->GetSizeY()));
+
+	// The window may be resizing under us, so the rectangle from the last tick
+	// is clipped to the buffer actually being presented.
+	SourceRect.Clip(FullRect);
+	if (SourceRect.Area() <= 0)
+	{
+		SourceRect = FullRect;
+	}
+
+	const FIntPoint SourceExtent = SourceRect.Size();
 
 	// The swap chain buffer is not something to sample from or hand to another
 	// device, so the presented frame is copied into a texture of our own first.
 	if (!ViewportStaging.IsValid()
-		|| ViewportStaging->GetSizeX() != BackBufferExtent.X
-		|| ViewportStaging->GetSizeY() != BackBufferExtent.Y
+		|| ViewportStaging->GetSizeX() != SourceExtent.X
+		|| ViewportStaging->GetSizeY() != SourceExtent.Y
 		|| ViewportStaging->GetFormat() != BackBuffer->GetFormat())
 	{
 		const FRHITextureCreateDesc Desc =
 			FRHITextureCreateDesc::Create2D(TEXT("Spout.ViewportStaging"))
-			.SetExtent(BackBufferExtent)
+			.SetExtent(SourceExtent)
 			.SetFormat(BackBuffer->GetFormat())
 			.SetNumMips(1)
 			.SetFlags(ETextureCreateFlags::ShaderResource | ETextureCreateFlags::RenderTargetable)
@@ -305,13 +348,44 @@ void USpoutSenderComponent::OnBackBufferReady_RenderThread(SWindow& Window, FRHI
 
 	RHICmdList.Transition(FRHITransitionInfo(BackBuffer, ERHIAccess::Unknown, ERHIAccess::CopySrc));
 	RHICmdList.Transition(FRHITransitionInfo(ViewportStaging, ERHIAccess::Unknown, ERHIAccess::CopyDest));
-	RHICmdList.CopyTexture(BackBuffer, ViewportStaging, FRHICopyTextureInfo());
+	FRHICopyTextureInfo CopyInfo;
+	CopyInfo.SourcePosition = FIntVector(SourceRect.Min.X, SourceRect.Min.Y, 0);
+	CopyInfo.Size = FIntVector(SourceExtent.X, SourceExtent.Y, 1);
+	RHICmdList.CopyTexture(BackBuffer, ViewportStaging, CopyInfo);
 
 	// Hand the swap chain buffer back in the state the presenter expects.
 	RHICmdList.Transition(FRHITransitionInfo(BackBuffer, ERHIAccess::CopySrc, ERHIAccess::Present));
 
 	Sender->Send_RenderThread(RHICmdList, ViewportStaging.GetReference(), Settings);
 #endif
+}
+
+FIntRect USpoutSenderComponent::ComputeViewportSourceRect() const
+{
+	const UGameViewportClient* ViewportClient = GEngine ? GEngine->GameViewport : nullptr;
+	const FSceneViewport* SceneViewport = ViewportClient ? ViewportClient->GetGameViewport() : nullptr;
+	const TSharedPtr<SViewport> ViewportWidget = SceneViewport ? SceneViewport->GetViewportWidget().Pin() : nullptr;
+	const TSharedPtr<SWindow> Window = GameViewportWindow.Pin();
+
+	if (!ViewportWidget.IsValid() || !Window.IsValid())
+	{
+		return FIntRect();
+	}
+
+	// Both are in desktop pixels, and the back buffer covers the window from its
+	// top left corner, so the difference is the viewport's place in the buffer.
+	// The window's geometry is taken from the same Slate pass as the viewport's:
+	// its live screen position moves as soon as the OS moves the window, a frame
+	// ahead of the cached widget geometry, and mixing the two shifts the
+	// rectangle for a frame, which the clip then shrinks into a transient resize
+	// of the sender that receivers may not recover from.
+	const FGeometry& Geometry = ViewportWidget->GetTickSpaceGeometry();
+	const FVector2D Min = FVector2D(Geometry.GetAbsolutePosition()) - FVector2D(Window->GetTickSpaceGeometry().GetAbsolutePosition());
+	const FVector2D Max = Min + FVector2D(Geometry.GetAbsoluteSize());
+
+	return FIntRect(
+		FIntPoint(FMath::RoundToInt(Min.X), FMath::RoundToInt(Min.Y)),
+		FIntPoint(FMath::RoundToInt(Max.X), FMath::RoundToInt(Max.Y)));
 }
 
 void USpoutSenderComponent::TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction)
@@ -325,8 +399,18 @@ void USpoutSenderComponent::TickComponent(float DeltaTime, ELevelTick TickType, 
 
 	if (SourceMode == ESpoutSourceMode::Viewport)
 	{
+		if (!BackBufferReadyHandle.IsValid())
+		{
+			const UWorld* World = GetWorld();
+			if (World && World->IsGameWorld())
+			{
+				BindViewportSource(false);
+			}
+		}
+
 		// The viewport path is driven by the present callback, so all this tick
 		// does is keep the render thread's copy of the settings current.
+		const FIntRect SourceRect = ComputeViewportSourceRect();
 		{
 			FScopeLock Lock(&ViewportSettingsSection);
 			ViewportSenderName = SenderName;
@@ -334,6 +418,7 @@ void USpoutSenderComponent::TickComponent(float DeltaTime, ELevelTick TickType, 
 			ViewportColorSpace = ColorSpace;
 			ViewportAlphaMode = AlphaMode;
 			bViewportFlipVertical = bFlipVertical;
+			ViewportSourceRect = SourceRect;
 		}
 
 		NotifyPublishedName();

@@ -25,6 +25,12 @@
 			"PlatformAllowList": [ "Win64" ]
 		},
 		{
+			"Name": "SpoutUEShaders",
+			"Type": "Runtime",
+			"LoadingPhase": "PostConfigInit",
+			"PlatformAllowList": [ "Win64" ]
+		},
+		{
 			"Name": "SpoutUE",
 			"Type": "Runtime",
 			"LoadingPhase": "Default",

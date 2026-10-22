@@ -15,6 +15,7 @@ THIRD_PARTY_INCLUDES_START
 THIRD_PARTY_INCLUDES_END
 #include "Windows/HideWindowsPlatformTypes.h"
 
+class FRHICommandListImmediate;
 class FRHITexture;
 
 /**
@@ -31,7 +32,7 @@ class FRHITexture;
  * copy it submits is ordered against Unreal's own work on that queue, so no
  * cross-queue fence of our own is needed. What still matters is that Unreal has
  * actually submitted the work that produced the frame before we copy it, which
- * the streams handle with FRHICommandListImmediate::SubmitCommandsHint.
+ * is what RunOnGraphicsQueue_RenderThread guarantees.
  *
  * One instance is shared by every sender and receiver: a second 11On12 device
  * would mean a second D3D11 runtime, for no benefit.
@@ -53,8 +54,9 @@ public:
 	 * Creates a D3D11 view onto a D3D12 resource.
 	 *
 	 * InState is the state the D3D12 resource must be in when Acquire is called;
-	 * OutState is the state it is left in by Release. Both are kept in sync with
-	 * the RHI transitions the callers issue around the acquire/release pair.
+	 * OutState is the state it is left in by Release. Both must be the state the
+	 * D3D12 RHI believes the resource is in, because the RHI never sees what
+	 * 11On12 does; 11On12 issues its own barriers around its work in between.
 	 */
 	bool WrapResource(
 		ID3D12Resource* InResource,
@@ -70,6 +72,21 @@ public:
 
 	/** Submits the D3D11 command list to the shared queue. */
 	void FlushD3D11() const;
+
+	/**
+	 * Runs Work on Unreal's submission thread, after every command the render
+	 * thread has recorded so far has been handed to the graphics queue, and
+	 * before anything recorded afterwards is.
+	 *
+	 * All D3D11On12 work belongs in here. Recording it straight from the render
+	 * thread puts it on the queue ahead of Unreal's own commands, which are still
+	 * waiting on the RHI thread, so the copy reads a frame that is not drawn yet
+	 * and the debug layer reports the resource in the wrong state.
+	 *
+	 * Work must only capture what it can keep alive by itself, plus objects whose
+	 * teardown flushes the RHI thread first.
+	 */
+	static void RunOnGraphicsQueue_RenderThread(FRHICommandListImmediate& RHICmdList, TFunction<void()>&& Work);
 
 	/** Native D3D12 resource behind an RHI texture, or null. */
 	static ID3D12Resource* GetNativeResource(FRHITexture* Texture);

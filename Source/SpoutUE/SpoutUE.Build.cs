@@ -30,6 +30,7 @@ public class SpoutUE : ModuleRules
 			"SlateCore",
 			"ApplicationCore",
 			"SpoutSDK",
+			"SpoutUEShaders",
 		});
 
 		if (Target.Platform == UnrealTargetPlatform.Win64)

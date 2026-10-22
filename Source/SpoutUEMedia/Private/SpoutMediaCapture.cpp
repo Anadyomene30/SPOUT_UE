@@ -21,6 +21,14 @@ bool USpoutMediaCapture::InitializeCapture()
 	Settings.AlphaMode = Output->AlphaMode;
 	Settings.bFlipVertical = Output->bFlipVertical;
 
+	// A scene viewport arrives already encoded for the display, which is exactly
+	// what "match viewport" asks for; encoding it again washes it out. Render
+	// targets still hold linear values and keep the conversion.
+	if (CaptureSourceType == EMediaCaptureSourceType::SCENE_VIEWPORT && Settings.ColorSpace == ESpoutColorSpace::MatchViewport)
+	{
+		Settings.ColorSpace = ESpoutColorSpace::Raw;
+	}
+
 	Sender = FSpoutSenderHandle::Create();
 	if (!Sender.IsValid())
 	{
@@ -29,6 +37,10 @@ bool USpoutMediaCapture::InitializeCapture()
 	}
 
 	UE_LOG(LogSpout, Log, TEXT("Spout media capture starting as '%s'."), *Settings.SenderName);
+
+	// The framework leaves the capture in Preparing, where no frame is ever
+	// handed over, until the implementation says it is ready.
+	SetState(EMediaCaptureState::Capturing);
 	return true;
 }
 

@@ -3,6 +3,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "RHIAccess.h"
 #include "SpoutUETypes.h"
 
 class FRDGBuilder;
@@ -34,13 +35,17 @@ namespace SpoutUE
 	 * Falls back to a straight RHI copy when no conversion is needed and the two
 	 * textures are copy compatible, so the pass-through case stays free.
 	 *
+	 * Destination is left in DestinationAccess. Asking for RTV also rules out the
+	 * plain copy, so the last thing to touch Destination is a raster write.
+	 *
 	 * Must be called on the render thread.
 	 */
 	void ConvertTexture_RenderThread(
 		FRHICommandListImmediate& RHICmdList,
 		FRHITexture* Source,
 		FRHITexture* Destination,
-		const FConversionSettings& Settings);
+		const FConversionSettings& Settings,
+		ERHIAccess DestinationAccess = ERHIAccess::SRVMask);
 
 	/**
 	 * Composites a straight-alpha overlay (a UMG burn-in) over Destination.

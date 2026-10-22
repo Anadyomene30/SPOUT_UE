@@ -89,6 +89,12 @@ void USpoutReceiverComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 
 bool USpoutReceiverComponent::ShouldAutoStart() const
 {
+	// Cooking, packaging and other commandlets load levels too, without an RHI.
+	if (IsRunningCommandlet())
+	{
+		return false;
+	}
+
 	switch (StartupPolicy)
 	{
 	case ESpoutStartupPolicy::EditorAndGame:
@@ -122,6 +128,14 @@ void USpoutReceiverComponent::StartReceiving()
 	bIsReceiving = true;
 	bWasConnected = false;
 	ConnectedSender = FSpoutSenderInfo();
+
+	// Editor-world input only flows while the editor keeps ticking its world.
+	const UWorld* World = GetWorld();
+	if (World && !World->IsGameWorld())
+	{
+		FSpoutUEModule::NotifyEditorStreamStarted();
+		bCountedAsEditorStream = true;
+	}
 }
 
 void USpoutReceiverComponent::StopReceiving()
@@ -141,6 +155,12 @@ void USpoutReceiverComponent::StopReceiving()
 	LastConformedFormat = PF_Unknown;
 
 	DestroyStream();
+
+	if (bCountedAsEditorStream)
+	{
+		FSpoutUEModule::NotifyEditorStreamStopped();
+		bCountedAsEditorStream = false;
+	}
 
 	if (bWasLive)
 	{

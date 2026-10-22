@@ -44,7 +44,12 @@ public:
 	FSpoutSenderStream();
 	~FSpoutSenderStream();
 
-	/** Publishes one frame. Returns false if nothing was sent. */
+	/**
+	 * Queues one frame for publishing. Returns false if nothing was queued.
+	 *
+	 * The copy to Spout happens later, on the submission thread, once the frame
+	 * has reached the GPU queue; whether Spout accepted it shows up in GetStats.
+	 */
 	bool Send_RenderThread(FRHICommandListImmediate& RHICmdList, FRHITexture* SourceTexture, const FSpoutSendParams& Params);
 
 	/** Tears the sender down and frees every GPU resource it holds. */
@@ -66,8 +71,12 @@ private:
 	/** Creates the D3D11On12 view onto the intermediate texture if it is missing. */
 	bool EnsureWrappedResource_RenderThread();
 
+	/** Records the outcome of one publish. Called on the submission thread. */
+	void NoteSendResult(bool bSent);
+
 	void NoteFrameSent();
 
+	/** Created on the render thread, then only used on the submission thread until released. */
 	FSpoutSenderDX* Sender = nullptr;
 
 	FTextureRHIRef SharedTexture;

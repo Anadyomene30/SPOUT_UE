@@ -11,50 +11,10 @@
 #include "RenderGraphUtils.h"
 #include "ScreenPass.h"
 #include "ShaderParameterStruct.h"
+#include "SpoutUEShaders.h"
 
 namespace
 {
-	class FSpoutConversionPS : public FGlobalShader
-	{
-	public:
-		DECLARE_GLOBAL_SHADER(FSpoutConversionPS);
-		SHADER_USE_PARAMETER_STRUCT(FSpoutConversionPS, FGlobalShader);
-
-		BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
-			SHADER_PARAMETER_RDG_TEXTURE(Texture2D, SpoutSourceTexture)
-			SHADER_PARAMETER_SAMPLER(SamplerState, SpoutSourceSampler)
-			SHADER_PARAMETER(FVector2f, SpoutInvOutputExtent)
-			SHADER_PARAMETER(int32, SpoutColorSpaceMode)
-			SHADER_PARAMETER(int32, SpoutAlphaMode)
-			SHADER_PARAMETER(uint32, SpoutFlipVertical)
-			RENDER_TARGET_BINDING_SLOTS()
-		END_SHADER_PARAMETER_STRUCT()
-
-		static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
-		{
-			return IsFeatureLevelSupported(Parameters.Platform, ERHIFeatureLevel::SM5);
-		}
-	};
-
-	class FSpoutOverlayPS : public FGlobalShader
-	{
-	public:
-		DECLARE_GLOBAL_SHADER(FSpoutOverlayPS);
-		SHADER_USE_PARAMETER_STRUCT(FSpoutOverlayPS, FGlobalShader);
-
-		BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
-			SHADER_PARAMETER_RDG_TEXTURE(Texture2D, SpoutOverlayTexture)
-			SHADER_PARAMETER_SAMPLER(SamplerState, SpoutOverlaySampler)
-			SHADER_PARAMETER(FVector2f, SpoutOverlayInvExtent)
-			RENDER_TARGET_BINDING_SLOTS()
-		END_SHADER_PARAMETER_STRUCT()
-
-		static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
-		{
-			return IsFeatureLevelSupported(Parameters.Platform, ERHIFeatureLevel::SM5);
-		}
-	};
-
 	int32 ToShaderColorSpace(ESpoutColorSpace ColorSpace)
 	{
 		switch (ColorSpace)
@@ -89,16 +49,14 @@ namespace
 	}
 }
 
-IMPLEMENT_GLOBAL_SHADER(FSpoutConversionPS, "/Plugin/SpoutUE/Private/SpoutConversion.usf", "MainPS", SF_Pixel);
-IMPLEMENT_GLOBAL_SHADER(FSpoutOverlayPS, "/Plugin/SpoutUE/Private/SpoutConversion.usf", "ComposeOverlayPS", SF_Pixel);
-
 namespace SpoutUE
 {
 	void ConvertTexture_RenderThread(
 		FRHICommandListImmediate& RHICmdList,
 		FRHITexture* Source,
 		FRHITexture* Destination,
-		const FConversionSettings& Settings)
+		const FConversionSettings& Settings,
+		ERHIAccess DestinationAccess)
 	{
 		check(IsInRenderingThread());
 
@@ -107,11 +65,14 @@ namespace SpoutUE
 			return;
 		}
 
-		if (Settings.IsPassThrough() && CanDirectCopy(Source, Destination))
+		// A plain copy would leave Destination in CopyDest, so a caller that needs
+		// a render target at the end always gets the pass.
+		if (Settings.IsPassThrough() && DestinationAccess != ERHIAccess::RTV && CanDirectCopy(Source, Destination))
 		{
 			RHICmdList.Transition(FRHITransitionInfo(Source, ERHIAccess::Unknown, ERHIAccess::CopySrc));
 			RHICmdList.Transition(FRHITransitionInfo(Destination, ERHIAccess::Unknown, ERHIAccess::CopyDest));
 			RHICmdList.CopyTexture(Source, Destination, FRHICopyTextureInfo());
+			RHICmdList.Transition(FRHITransitionInfo(Destination, ERHIAccess::CopyDest, DestinationAccess));
 			return;
 		}
 
@@ -145,6 +106,7 @@ namespace SpoutUE
 			Parameters,
 			FIntRect(0, 0, DestinationExtent.X, DestinationExtent.Y));
 
+		GraphBuilder.SetTextureAccessFinal(DestinationRDG, DestinationAccess);
 		GraphBuilder.Execute();
 	}
 

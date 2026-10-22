@@ -137,6 +137,10 @@ private:
 	FSpoutReceiverStream* Stream = nullptr;
 
 	bool bWasConnected = false;
+
+	/** Set while this receiver counts towards FSpoutUEModule's editor stream count. */
+	bool bCountedAsEditorStream = false;
+
 	FIntPoint LastConformedSize = FIntPoint::ZeroValue;
 	EPixelFormat LastConformedFormat = PF_Unknown;
 };

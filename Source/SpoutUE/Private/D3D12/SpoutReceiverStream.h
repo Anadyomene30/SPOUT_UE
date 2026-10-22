@@ -84,6 +84,27 @@ private:
 	bool EnsureWrappedResource_RenderThread();
 	void NoteFrameReceived();
 
+	/** Records what one receive found out. Called on the submission thread. */
+	void NoteQueueResult(bool bIsConnected);
+
+	/** What the latest receive on the graphics queue found out, for the render thread. */
+	struct FQueueState
+	{
+		bool bConnected = false;
+
+		/** Set when a result arrived since the render thread last looked. */
+		bool bFresh = false;
+
+		/** Events, kept until the render thread has seen them. */
+		bool bUpdated = false;
+		bool bNewFrame = false;
+
+		FString SenderName;
+		FIntPoint SenderSize = FIntPoint::ZeroValue;
+		DXGI_FORMAT SenderFormat = DXGI_FORMAT_UNKNOWN;
+	};
+
+	/** Created on the render thread, then only used on the submission thread until released. */
 	spoutDX* Receiver = nullptr;
 
 	FTextureRHIRef ReceiveTexture;
@@ -99,6 +120,7 @@ private:
 	mutable FCriticalSection StateSection;
 	FSpoutStreamStats Stats;
 	FSpoutReceiveResult LastResult;
+	FQueueState QueueState;
 	bool bConnected = false;
 
 	double RateWindowStartSeconds = 0.0;

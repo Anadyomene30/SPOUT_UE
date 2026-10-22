@@ -72,7 +72,8 @@ public:
 	 * Transfer function applied on the way out.
 	 *
 	 * Unreal render targets hold linear values, so "match viewport" is what makes
-	 * the shared frame look like what you see in the editor.
+	 * the shared frame look like what you see in the editor. The game viewport
+	 * source is already encoded for the display, so there it publishes as is.
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Spout|Sender")
 	ESpoutColorSpace ColorSpace = ESpoutColorSpace::MatchViewport;
@@ -146,12 +147,15 @@ protected:
 	/** Destroys the stream on the render thread, which is the only place it may be touched. */
 	void DestroyStream();
 
-	/** Subscribes to the presented frame when SourceMode is Viewport. */
-	void BindViewportSource();
+	/** Subscribes to the presented frame when SourceMode is Viewport. Quiet when retried from the tick. */
+	void BindViewportSource(bool bLogFailures = true);
 	void UnbindViewportSource();
 
 	/** Called on the render thread once per presented frame. */
 	void OnBackBufferReady_RenderThread(SWindow& Window, FRHITexture* BackBuffer);
+
+	/** The game viewport's rectangle within its window, in back buffer pixels. */
+	FIntRect ComputeViewportSourceRect() const;
 
 	UPROPERTY(Transient)
 	bool bIsSending = false;
@@ -162,6 +166,9 @@ private:
 
 	FString LastPublishedName;
 	double LastSendTimeSeconds = 0.0;
+
+	/** Set while this sender counts towards FSpoutUEModule's editor stream count. */
+	bool bCountedAsEditorStream = false;
 
 	/**
 	 * Send settings snapshotted for the render thread.
@@ -175,6 +182,13 @@ private:
 	ESpoutColorSpace ViewportColorSpace = ESpoutColorSpace::MatchViewport;
 	ESpoutAlphaMode ViewportAlphaMode = ESpoutAlphaMode::Opaque;
 	bool bViewportFlipVertical = false;
+
+	/**
+	 * Where the game viewport sits in its window's back buffer. In PIE that window
+	 * is the whole editor, so only this part of the presented frame is published.
+	 * Empty means the whole back buffer.
+	 */
+	FIntRect ViewportSourceRect;
 
 	/** Copy of the presented frame, so the sender never samples the swap chain. */
 	FTextureRHIRef ViewportStaging;
