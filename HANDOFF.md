@@ -1,7 +1,7 @@
 # Handoff notes
 
-Written at commit `d853af9` on branch `claude/ue-spout-plugin-windows-q4kozn`,
-for whoever picks this up next. The README is the user-facing documentation;
+Originally written at `d853af9`; updated after the first Windows build (UE 5.5
+and 5.8), for whoever picks this up next. The README is the user-facing documentation;
 this file is the engineering state: what is uncertain, what was decided on
 purpose, and what to do first.
 
@@ -9,12 +9,42 @@ purpose, and what to do first.
 
 ## Where things stand
 
-The plugin is feature-complete and pushed. **It has never been compiled.** It
-was written in a Linux container with no Unreal installation and no Windows SDK,
-so not one line has been through a compiler. Treat every API call as plausible
-rather than verified.
+The plugin is feature-complete and **compiles cleanly on UE 5.5 and UE 5.8**
+(Windows, MSVC 14.44): editor, Development game and Shipping game targets, all
+four modules, every file also built outside unity blobs. The only remaining
+warning is C4828 from a non-UTF-8 byte in a comment of the vendored
+`SpoutCopy.cpp`, left alone on purpose (see *Vendored SDK*). 5.6 and 5.7 have
+not been built — no engine installed — but every fix below is written to work
+on both sides of whichever release changed the API.
 
-Six commits, four modules, ~50 source files excluding the vendored SDK.
+**It has never been run.** Nothing below about runtime behaviour has been
+observed yet.
+
+### Fixes the first build needed
+
+| Where | Problem | Fix |
+|---|---|---|
+| `SpoutUEExtensions.h` | `SPOUTSDK_API` expands to `DLLEXPORT`, which the vendored sources never get a definition for | export with the SDK's own `SPOUT_DLLEXP` |
+| `SpoutMediaCapture.cpp` | `UMediaCapture::GetMediaOutput()` does not exist | read the protected `MediaOutput` member (confirmed in both engines) |
+| `SpoutSenderComponent` | 5.8's `OnBackBufferReadyToPresent` passes `ISlateViewportProvider&` instead of the back buffer | generic lambda + `GetBackBuffer` overloads, the provider one behind `__has_include`; delegate tracked by handle |
+| `SpoutUE.Build.cs` | 5.5's `D3D12RHI` does not re-export `d3dx12.h` | `AddEngineThirdPartyPrivateStaticDependencies(Target, "DX12")` |
+| four `.cpp` files | `UWorld` used through transitive includes only; broke non-unity builds | include `Engine/World.h` |
+| both streams | `SubmitCommandsHint` deprecated in 5.8 | `ImmediateFlush(EImmediateFlushType::DispatchToRHIThread)`, which is what it forwarded to |
+
+### Building it locally — gotchas met on this machine
+
+- **Path length.** UBT refuses intermediate paths over 260 characters. Package
+  into something short (`-Package=C:\SB\p58`), not a deep temp folder.
+- **UE 5.5 + Jawset Postshot.** The Marketplace install ships
+  `UnrealEditor-PostshotEditor.dll` without `Source/Editor`, and UBT then fails
+  *every* C++ editor build on that engine with "Unable to find module
+  'PostshotEditor'", even with the plugin disabled. `RunUAT BuildPlugin` cannot
+  work around it. What works: a host project carrying an empty
+  `Plugins/Postshot/Postshot.uplugin` (no modules) that shadows the engine one.
+  Reinstalling or removing Postshot fixes it for good.
+- **Game targets need a C++ host project.** A content-only project's
+  `UnrealGame` build just reuses the engine's prebuilt executable and never
+  compiles the plugin.
 
 | Module | What it is |
 |---|---|
@@ -27,14 +57,7 @@ Target: **UE 5.5 → 5.8**, Windows 64-bit, **D3D12 only**.
 
 ## Do this first
 
-Build it. Everything below is guesswork until a compiler has had a look.
-
-```
-YourProject/Plugins/SpoutUE/   <- clone the branch here
-```
-
-Then generate project files and build. Expect to fix things. When the build is
-green, the first functional test is the cheapest one: drop a **Spout Sender
+Run it. The cheapest functional test: drop a **Spout Sender
 Manager** in a level, assign any render target, set Startup Policy to *Editor
 and game*, and open OBS with a Spout2 Capture source. If the image appears at
 all, the whole sharing path works and what remains is polish.
@@ -43,61 +66,14 @@ all, the whole sharing path works and what remains is polish.
 
 ## Ranked risk list
 
-Ordered by how likely each is to be wrong, highest first.
+The compile-time doubts are settled: `UMediaCapture`, `ID3D12DynamicRHI` and
+`bUseUnity` all built on both engines (no deprecation warning for the latter).
+What is left can only fail at runtime. Ordered by how likely each is to be
+wrong, highest first.
 
-### 1. `UMediaCapture` — `SpoutUEMedia`
+### 1. D3D12 resource states around the 11On12 wrapper
 
-The weakest link, and the only module that can be deleted outright. Three
-specific doubts:
-
-- `SetMediaOutput()` and `GetMediaOutput()` are assumed public on
-  `UMediaCapture`. I did not verify this against real headers — it is the
-  pattern the engine's own capture implementations use, but the accessor could
-  be named differently or protected.
-- `OnRHIResourceCaptured_RenderingThread` gained an `FRHICommandListImmediate&`
-  first parameter in 5.3. Guarded with `UE_VERSION_OLDER_THAN`. If it moved
-  again in 5.6+, this is where it shows.
-- `InitializeCapture()` is the 5.2+ entry point. Fine for 5.5+, but it replaced
-  three older virtuals, so an engine that reintroduces them would silently never
-  call ours.
-
-**Checked against Epic's public API docs (search results only; the docs site
-itself was unreachable from the container):**
-
-- `SetMediaOutput` exists and is public: it is Blueprint-callable, and can
-  only be called while the capture is stopped.
-- `OnRHIResourceCaptured_RenderingThread` does take `FRHICommandListImmediate&`
-  first in the current docs, and `InitializeCapture` is what the AJA,
-  Blackmagic and NDI captures override. Both match the code.
-- **`GetMediaOutput()` on `UMediaCapture` was not found anywhere.** The only
-  `GetMediaOutput()` documented belongs to `UProxyMediaOutput`. This is the most
-  likely compile error in the module. Fix: in `SpoutMediaCapture.cpp`, read the
-  base class's protected `MediaOutput` member instead
-  (`Cast<USpoutMediaOutput>(MediaOutput)`). That member is from memory, not
-  verified — check `MediaCapture.h` in the engine tree.
-
-**If it fights you:** delete the `SpoutUEMedia` entry from `SpoutUE.uplugin`.
-Nothing else references the module. The sender components cover every use case
-except nDisplay and Movie Render Queue.
-
-### 2. `ID3D12DynamicRHI` — `Private/D3D12/SpoutD3D12Device.cpp`
-
-`RHIGetDevice(0)`, `RHIGetCommandQueue()` and `RHIGetResource(FRHITexture*)`.
-Stable since 5.0 as far as I know, and it is the public interface rather than
-D3D12RHI internals, but it is the tightest coupling to the engine in the whole
-plugin. If this breaks there is no fallback — the plugin cannot work without
-reaching Unreal's device and queue.
-
-**Checked against Epic's public API docs:** `RHIGetDevice(uint32)` returns
-`ID3D12Device*`, `RHIGetCommandQueue()` returns `ID3D12CommandQueue*`, and
-`RHIGetResource` has an `FRHITexture*` overload returning `ID3D12Resource*`, all
-declared in `ID3D12DynamicRHI.h`. All three match the code. This risk drops
-well below the state-tracking one.
-
-### 3. D3D12 resource states around the 11On12 wrapper
-
-This is the part most likely to compile cleanly and still be wrong at runtime,
-so it deserves the most scrutiny once the build is green.
+The part most likely to compile cleanly and still be wrong.
 
 `CreateWrappedResource` declares the state the D3D12 resource must be in when
 `AcquireWrappedResources` is called, and the state it is left in on release. The
@@ -111,17 +87,36 @@ is this. The fix is to adjust the `ERHIAccess` on either side of the acquire in
 `SpoutSenderStream.cpp` / `SpoutReceiverStream.cpp` so it matches the declared
 state exactly.
 
-### 4. `FWidgetRenderer::DrawWidget` — UMG burn-in
+### 2. Submission order before the acquire
+
+`ImmediateFlush(DispatchToRHIThread)` hands the frame's commands to the RHI
+thread; it does not wait for the RHI thread to submit them to the GPU queue. The
+D3D11On12 copy is issued from the render thread straight onto the same queue, so
+with the RHI thread enabled (the D3D12 default) the copy can, in principle,
+reach the queue before the conversion pass that produced the frame. Symptom: a
+receiver one frame behind, or occasional torn frames. If that shows up, try
+`EImmediateFlushType::FlushRHIThread` in both streams — correct ordering at the
+cost of a render-thread stall — and measure.
+
+### 3. `SpoutUEMedia` (Media Output)
+
+Compiles on both engines; never exercised. **If it fights you at runtime:**
+delete the `SpoutUEMedia` entry from `SpoutUE.uplugin`. Nothing else references
+the module. The sender components cover every use case except nDisplay and
+Movie Render Queue.
+
+### 4. Viewport source on 5.6 / 5.7
+
+The back buffer callback picks its overload by whether
+`Slate/SlateViewportProvider.h` exists. That is right for 5.5 and 5.8; on the two
+untested releases it relies on the header and the delegate signature having
+changed together. A compile error in `SpoutSenderComponent.cpp` there means they
+did not.
+
+### 5. `FWidgetRenderer::DrawWidget` — UMG burn-in
 
 Only reached when `BurnInWidgetClass` is set on a capture component. Low blast
 radius: if it misbehaves, the burn-in is the only casualty.
-
-### 5. `ModuleRules.bUseUnity` — `SpoutSDK.Build.cs`
-
-Deprecated in recent UBT. A warning is expected and harmless. If it errors,
-delete the line — the vendored SDK will then build inside unity blobs, which may
-or may not produce symbol collisions. If it does, that is the moment to think
-about it, not before.
 
 ---
 
@@ -137,7 +132,7 @@ receivers cannot know how to interpret the bits, and OBS shows nothing at all.
 format instead of the one read off the texture. It is a subclass rather than a
 patch so the vendored sources stay refreshable from upstream.
 
-**`SubmitCommandsHint` before every acquire.** The conversion pass can still be
+**A flush of the immediate command list before every acquire.** The conversion pass can still be
 sitting in an open command list when the D3D11 side copies, which shows
 receivers the previous frame. This is not defensive paranoia; remove it and you
 get a one-frame lag that looks like a Spout problem.

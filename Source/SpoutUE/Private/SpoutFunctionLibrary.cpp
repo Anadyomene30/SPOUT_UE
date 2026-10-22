@@ -4,6 +4,7 @@
 
 #include "Engine/Engine.h"
 #include "Engine/TextureRenderTarget2D.h"
+#include "Engine/World.h"
 #include "RHI.h"
 #include "SpoutSubsystem.h"
 #include "SpoutUE.h"

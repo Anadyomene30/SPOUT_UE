@@ -151,7 +151,7 @@ protected:
 	void UnbindViewportSource();
 
 	/** Called on the render thread once per presented frame. */
-	void OnBackBufferReady_RenderThread(SWindow& Window, const FTextureRHIRef& BackBuffer);
+	void OnBackBufferReady_RenderThread(SWindow& Window, FRHITexture* BackBuffer);
 
 	UPROPERTY(Transient)
 	bool bIsSending = false;
@@ -182,5 +182,6 @@ private:
 	/** Slate presents every window it owns; this is the one worth copying. */
 	TWeakPtr<SWindow> GameViewportWindow;
 
-	bool bViewportSourceBound = false;
+	/** Valid while subscribed to Slate's present callback. */
+	FDelegateHandle BackBufferReadyHandle;
 };

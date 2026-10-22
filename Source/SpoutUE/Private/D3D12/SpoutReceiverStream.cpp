@@ -95,7 +95,7 @@ FSpoutReceiveResult FSpoutReceiverStream::ReceiveInternal_RenderThread(FRHIComma
 		// Spout writes into our texture from the D3D11 side, so Unreal has to be
 		// done with it and it has to be in the state the wrapper was declared with.
 		RHICmdList.Transition(FRHITransitionInfo(ReceiveTexture.GetReference(), ERHIAccess::Unknown, ERHIAccess::CopyDest));
-		RHICmdList.SubmitCommandsHint();
+		RHICmdList.ImmediateFlush(EImmediateFlushType::DispatchToRHIThread);
 		Device->AcquireWrapped(WrappedResource.GetReference());
 	}
 

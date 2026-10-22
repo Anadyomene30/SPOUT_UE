@@ -20,7 +20,11 @@
  * updated from upstream without re-applying a patch. Copying a typeless texture
  * into a typed shared texture of the same format family is valid D3D11.
  */
-class SPOUTSDK_API FSpoutSenderDX : public spoutDX
+// SPOUT_DLLEXP rather than SPOUTSDK_API: this file is compiled with the
+// vendored sources, which never include the engine headers that define
+// DLLEXPORT. SpoutSDK.Build.cs sets SPOUT_BUILD_DLL / SPOUT_IMPORT_DLL so the
+// macro resolves the same way UBT's would.
+class SPOUT_DLLEXP FSpoutSenderDX : public spoutDX
 {
 public:
 	/**

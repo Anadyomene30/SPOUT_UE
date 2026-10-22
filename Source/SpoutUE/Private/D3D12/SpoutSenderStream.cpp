@@ -84,10 +84,10 @@ bool FSpoutSenderStream::Send_RenderThread(FRHICommandListImmediate& RHICmdList,
 
 	// The D3D11On12 copy runs on Unreal's own graphics queue, so it is ordered
 	// against Unreal's work once that work has actually been submitted. Without
-	// this hint the conversion pass above may still be sitting in an open command
+	// this flush the conversion pass above may still be sitting in an open command
 	// list while the D3D11 side copies, and receivers see the previous frame.
 	RHICmdList.Transition(FRHITransitionInfo(SharedTexture.GetReference(), ERHIAccess::Unknown, ERHIAccess::CopySrc));
-	RHICmdList.SubmitCommandsHint();
+	RHICmdList.ImmediateFlush(EImmediateFlushType::DispatchToRHIThread);
 
 	if (!EnsureWrappedResource_RenderThread())
 	{

@@ -8,7 +8,7 @@
 
 bool USpoutMediaCapture::InitializeCapture()
 {
-	const USpoutMediaOutput* Output = Cast<USpoutMediaOutput>(GetMediaOutput());
+	const USpoutMediaOutput* Output = Cast<USpoutMediaOutput>(MediaOutput);
 	if (!Output)
 	{
 		UE_LOG(LogSpout, Error, TEXT("Spout media capture was created without a Spout media output."));

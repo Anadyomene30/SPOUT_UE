@@ -6,6 +6,7 @@
 #include "Camera/CameraComponent.h"
 #include "CineCameraComponent.h"
 #include "Engine/TextureRenderTarget2D.h"
+#include "Engine/World.h"
 #include "HAL/IConsoleManager.h"
 #include "RenderingThread.h"
 #include "Slate/WidgetRenderer.h"

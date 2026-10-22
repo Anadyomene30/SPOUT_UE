@@ -3,6 +3,7 @@
 #include "SpoutReceiverComponent.h"
 
 #include "Engine/TextureRenderTarget2D.h"
+#include "Engine/World.h"
 #include "RenderingThread.h"
 #include "SpoutSettings.h"
 #include "SpoutUE.h"

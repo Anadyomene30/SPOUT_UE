@@ -5,6 +5,7 @@
 #include "Engine/Engine.h"
 #include "Engine/GameViewportClient.h"
 #include "Engine/TextureRenderTarget2D.h"
+#include "Engine/World.h"
 #include "Framework/Application/SlateApplication.h"
 #include "RHICommandList.h"
 #include "RenderingThread.h"
@@ -12,6 +13,30 @@
 #include "SpoutUE.h"
 #include "TextureResource.h"
 #include "Widgets/SWindow.h"
+
+// Slate's present callback stopped passing the back buffer directly and started
+// passing this provider somewhere after 5.5 (5.8 has it).
+#if __has_include("Slate/SlateViewportProvider.h")
+	#include "Slate/SlateViewportProvider.h"
+	#define SPOUT_HAS_SLATE_VIEWPORT_PROVIDER 1
+#else
+	#define SPOUT_HAS_SLATE_VIEWPORT_PROVIDER 0
+#endif
+
+namespace SpoutSenderComponentPrivate
+{
+	FRHITexture* GetBackBuffer(const FTextureRHIRef& BackBuffer)
+	{
+		return BackBuffer.GetReference();
+	}
+
+#if SPOUT_HAS_SLATE_VIEWPORT_PROVIDER
+	FRHITexture* GetBackBuffer(ISlateViewportProvider& ViewportProvider)
+	{
+		return ViewportProvider.GetBackBufferResource();
+	}
+#endif
+}
 
 USpoutSenderComponent::USpoutSenderComponent()
 {
@@ -159,7 +184,7 @@ void USpoutSenderComponent::DestroyStream()
 void USpoutSenderComponent::BindViewportSource()
 {
 #if PLATFORM_WINDOWS
-	if (bViewportSourceBound)
+	if (BackBufferReadyHandle.IsValid())
 	{
 		return;
 	}
@@ -185,25 +210,31 @@ void USpoutSenderComponent::BindViewportSource()
 		return;
 	}
 
-	FSlateApplication::Get().GetRenderer()->OnBackBufferReadyToPresent().AddRaw(this, &USpoutSenderComponent::OnBackBufferReady_RenderThread);
-	bViewportSourceBound = true;
+	// The second parameter is the back buffer itself on older engines and an
+	// ISlateViewportProvider on newer ones; the generic lambda takes either and
+	// overload resolution picks the matching GetBackBuffer.
+	BackBufferReadyHandle = FSlateApplication::Get().GetRenderer()->OnBackBufferReadyToPresent().AddLambda(
+		[this](SWindow& Window, auto& BackBufferSource)
+		{
+			OnBackBufferReady_RenderThread(Window, SpoutSenderComponentPrivate::GetBackBuffer(BackBufferSource));
+		});
 #endif
 }
 
 void USpoutSenderComponent::UnbindViewportSource()
 {
 #if PLATFORM_WINDOWS
-	if (!bViewportSourceBound)
+	if (!BackBufferReadyHandle.IsValid())
 	{
 		return;
 	}
 
 	if (FSlateApplication::IsInitialized() && FSlateApplication::Get().GetRenderer())
 	{
-		FSlateApplication::Get().GetRenderer()->OnBackBufferReadyToPresent().RemoveAll(this);
+		FSlateApplication::Get().GetRenderer()->OnBackBufferReadyToPresent().Remove(BackBufferReadyHandle);
 	}
 
-	bViewportSourceBound = false;
+	BackBufferReadyHandle.Reset();
 	GameViewportWindow.Reset();
 
 	// The delegate fires on the render thread, so an in-flight call has to finish
@@ -212,12 +243,12 @@ void USpoutSenderComponent::UnbindViewportSource()
 #endif
 }
 
-void USpoutSenderComponent::OnBackBufferReady_RenderThread(SWindow& Window, const FTextureRHIRef& BackBuffer)
+void USpoutSenderComponent::OnBackBufferReady_RenderThread(SWindow& Window, FRHITexture* BackBuffer)
 {
 #if PLATFORM_WINDOWS
 	check(IsInRenderingThread());
 
-	if (!bIsSending || !BackBuffer.IsValid() || !Sender.IsValid())
+	if (!bIsSending || !BackBuffer || !Sender.IsValid())
 	{
 		return;
 	}

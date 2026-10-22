@@ -38,6 +38,10 @@ public class SpoutUE : ModuleRules
 			// only supported way to reach Unreal's device, queue and resources.
 			PrivateDependencyModuleNames.Add("D3D12RHI");
 
+			// Those headers include d3dx12.h. D3D12RHI only re-exports the DX12
+			// third-party includes from 5.6 or so; on 5.5 we have to ask ourselves.
+			AddEngineThirdPartyPrivateStaticDependencies(Target, "DX12");
+
 			PublicSystemLibraries.AddRange(new string[]
 			{
 				"d3d11.lib",

@@ -8,8 +8,8 @@ Send any render target, CineCamera or the game viewport out over Spout, and pull
 Spout streams back into render targets and materials. Nothing is compressed,
 nothing is read back to the CPU, and nothing leaves the GPU.
 
-> **Status:** the plugin is complete but has not yet been compiled against a real
-> engine installation — see [Before your first build](#before-your-first-build).
+> **Status:** builds cleanly on UE 5.5 and 5.8 (editor, game and Shipping
+> targets). Not yet tested at runtime — see [Building](#building).
 
 ---
 
@@ -174,8 +174,8 @@ So the plugin layers a single **D3D11On12** device on top of Unreal's own D3D12
 device *and its graphics queue*. Because the queue is shared, every copy the
 D3D11 side submits is naturally ordered against Unreal's rendering; no fence of
 our own is needed. What does need care is that Unreal has actually submitted the
-work that produced the frame, which is why the streams call `SubmitCommandsHint`
-before acquiring a wrapped resource.
+work that produced the frame, which is why the streams flush the immediate command list
+(`ImmediateFlush(DispatchToRHIThread)`) before acquiring a wrapped resource.
 
 ```
 UTextureRenderTarget2D
@@ -249,27 +249,24 @@ sender name. Give them distinct names.
 **Turn on `Verbose Spout Logging`** in project settings; the SDK's own log goes
 to `SpoutUE.log` and says precisely which mutex or handle failed.
 
-## Before your first build
+## Building
 
-The plugin has not been compiled against a real engine installation yet. Nothing
-here is speculative design — the sharing path follows the Spout SDK's own D3D12
-sample — but a few call sites are the kind that move between engine versions. If
-the build complains, look at these first:
+Verified with MSVC 14.44 on UE 5.5 and 5.8; 5.6 and 5.7 are expected to work
+but have not been built. Two things that can trip the build on Windows and have
+nothing to do with this plugin:
 
-1. **`ID3D12DynamicRHI`** (`Source/SpoutUE/Private/D3D12/SpoutD3D12Device.cpp`) —
-   `RHIGetDevice`, `RHIGetCommandQueue` and `RHIGetResource` have been stable
-   since 5.0, but they are the tightest coupling to the engine here.
-2. **`UMediaCapture`** (`Source/SpoutUEMedia`) — the override signature changed
-   once already, in 5.3, and is guarded. If it moved again, that is the place.
-   The whole `SpoutUEMedia` module can be deleted from `SpoutUE.uplugin` without
-   affecting anything else.
-3. **`FWidgetRenderer::DrawWidget`** (`SpoutCaptureComponent.cpp`) — only used by
-   the UMG burn-in.
-4. **`ModuleRules.bUseUnity`** (`SpoutSDK.Build.cs`) — deprecated in recent UBT
-   versions. If it warns, that is expected; if it errors, drop the line and the
-   vendored SDK will simply build inside unity blobs.
+1. **Path length.** UBT refuses intermediate paths over 260 characters. Keep the
+   project, or `RunUAT BuildPlugin -Package=`, in a short folder.
+2. **A broken Marketplace plugin in the engine.** UBT validates every engine
+   plugin's module list, enabled or not, so one installed without its sources
+   fails every C++ editor build with *Unable to find module ...*. Reinstall or
+   remove that plugin.
 
-Everything else is ordinary UObject, RHI and RDG code.
+If a future engine breaks the build, the call sites most likely to move are
+`ID3D12DynamicRHI` in `Source/SpoutUE/Private/D3D12/SpoutD3D12Device.cpp`, the
+`UMediaCapture` overrides in `Source/SpoutUEMedia` (that whole module can be
+dropped from `SpoutUE.uplugin` without affecting anything else) and Slate's
+back buffer delegate in `SpoutSenderComponent.cpp`.
 
 The Place Actors panel has no custom Spout category on purpose: the three actors
 are placeable UCLASSes, so they already appear under All Classes and come up by
