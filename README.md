@@ -208,7 +208,7 @@ the one behaviour change lives in `FSpoutSenderDX`, a subclass beside them.
 | `SpoutSDK` | Runtime | vendored Spout 2 SDK plus `FSpoutSenderDX` |
 | `SpoutUE` | Runtime | bridge, streams, components, actors, subsystem, settings |
 | `SpoutUEMedia` | Runtime | `USpoutMediaOutput` / `USpoutMediaCapture` |
-| `SpoutUEEditor` | Editor | sender picker, live status, Place Actors category |
+| `SpoutUEEditor` | Editor | sender picker, live status |
 
 ## Known limitations
 
